@@ -49,7 +49,7 @@
 - U3 (README, 6h, P2)
 - **U4 ✅ closed (2026-09-03)** — AgentForge 第 2 domain agent (`doc_writer`) ship (HydraForge 端 zero code change; 3 atomic commits in `/workspace/project/AgentForge` repo: `dfc6882` refactor + `7b4330c` agents + `2e10104` docs; 11/11 tests / 34 assertions pass) — **Phase 7a C1 解锁**
 - **U6 ✅ closed (2026-09-03)** — ADR-0042 🔍 → 🟡 翻牌 ship (commit `622b742`)
-- W4 阶段 B (IStreamHandle 语义, 4h, P0)
+- W4 阶段 B (IStreamHandle 语义, 4h, P0) — ✅ closed 2026-09-04 (OpenSpec `adr-0072-d1-stream-runtime-semantics` archived): IStreamHandle L1 契约 + Buffered/Callback 双实现 + NodeExecutor set_stream_sink 注入点 + 2 类节点 V1 切片回放. 15/19 测试 PASS (4 集成测试已知限制待 follow-up). ADR-0072 D1 实施度 1/6 → 2/6
 - W5 ✅ closed (2026-09-03) — ADR-0072 D4 `backend:` parser ship (commit `ca03071`)
 - W4 阶段 A ✅ closed (2026-09-03) — ADR-0072 D1 `stream:` 字段层 ship (commit `c61a6d0`)
 - ADR-0072 D6 (条件触发, Conditional 决议触发)

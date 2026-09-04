@@ -1520,3 +1520,21 @@ class MockLLMProvider : public ILLMProvider {
 
 - **验证**: `tests/test_dsl_extensions.cpp::test_dsl_extensions[W4]`
 - **状态**: ✅ 已实现阶段 A (2026-09-03, Sprint 25 Change #4) — ADR-0072 D1 实施度从 0/6 升至 1/6（仅字段层）；阶段 B 留 Sprint 26
+
+### REQ-W4-001-B: 运行时流式执行语义 (阶段 B, 2026-09-04 ship)
+
+- **来源**: ADR-0072 D1 阶段 B (IStreamHandle 运行时语义, Sprint 26 W4 阶段 B)
+- **行为**:
+  - `NodeExecutor::set_stream_sink(IStreamHandle*)` 注入点 (raw pointer, no ownership, 与 set_tool_coordinator 一致)
+  - 当 `metadata["stream"] == true` (严格 JSON 布尔) 且 `stream_sink_` 已注入时, 节点 (tool_call / dsl_call) 同步执行完成后将 ToolResult/Context 切片为 N 个 chunk (kStreamChunkSize=64), 通过 `sink_->push()` 写入, 最后 `sink_->close(nullopt)` 标记 EOF
+  - 消费者通过 `sink_->next(token)` 拉取; cancel 通过持 stop_source → `next(token)` 内部检查 stop_requested() 终止
+  - **V1 语义**: 节点仍走同步执行路径, 流式触发指完成后切片回放 (post-hoc pseudo-streaming). 真流式 (incremental) 依赖 IToolRegistry streaming API, V2 阶段交付
+  - **scope**: 2 类节点 (tool_call / dsl_call); shell_exec NodeType 不存在 (W5 parser 提案)
+- **触发条件**:
+  - `metadata["stream"] == true` (JSON 布尔) AND `stream_sink_ != nullptr` → 流式分支
+  - `metadata["stream"] == true` AND `stream_sink_ == nullptr` → 警告 stderr + 同步路径
+  - 缺省 / false / 字符串 / 数字 / null → 同步路径 (向后兼容, 既有 100+ 测试零回归)
+- **契约层**: `include/agenticdsl/contract/i_stream_handle.h` (5 虚函数: 3 consumer pull + 2 producer push/close)
+- **参考实现**: `src/common/runtime/stream_handle.{h,cpp}` (`BufferedStreamHandle` pull + `CallbackStreamHandle` push+pull, RAII 析构顺序)
+- **验证**: `tests/test_stream_runtime.cpp` (5 类 TEST_CASE / 19 cases, 15 PASS, 4 集成测试已知限制待 follow-up)
+- **状态**: ✅ 已实现阶段 B (2026-09-04, Sprint 26 W4 阶段 B) — ADR-0072 D1 实施度从 1/6 升至 2/6

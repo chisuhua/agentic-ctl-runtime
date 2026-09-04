@@ -13,6 +13,7 @@
 #include "agenticdsl/contract/itool_registry.h" // P1.T2: IToolRegistry 抽象接口
 #include "agenticdsl/contract/iparser.h" // ADR-0019 §1.4: 仅依赖解析器抽象接口
 #include "agenticdsl/contract/iinteraction_bus.h" // Phase 1 Sprint 1b (S1b.T3): IInteractionBus 事件推送契约 (ADR-0019 P2)
+#include "agenticdsl/contract/i_stream_handle.h" // ADR-0072 D1 阶段 B: IStreamHandle L1 契约层
 // Sprint 19: 改为 IApprovalHandler 抽象 (不再拖入 common/policy/approval_handler.h)
 #include "agenticdsl/policy/iapproval_handler.h" // Sprint 19: 审批处理器抽象 (ADR-0019 §1.4 解耦)
 #include <nlohmann/json.hpp>
@@ -76,6 +77,9 @@ public:
       tool_coordinator_ = coordinator;
     }
 
+    // ADR-0072 D1 阶段 B: stream 注入点 (raw pointer, no ownership, 与 set_tool_coordinator 一致)
+    void set_stream_sink(IStreamHandle* sink) { stream_sink_ = sink; }
+
 private:
     // P1.T4: IToolRegistry& (依赖倒置, 通过 has_tool/call_tool/call_llm_tool 多态分派)
     IToolRegistry& tool_registry_;
@@ -98,6 +102,10 @@ private:
 
     // C4 Sprint 14 (Oracle ses_0ed4408faffeLv8VfrC0s5PzW7): ToolCoordinator 优先于 approval_handler_
     ToolCoordinator* tool_coordinator_{nullptr};
+
+    // ADR-0072 D1 阶段 B: stream 注入点 (raw pointer, no ownership)
+    IStreamHandle* stream_sink_{nullptr};
+    static constexpr size_t kStreamChunkSize = 64;
 
     // 权限检查
     void check_permissions(const std::vector<std::string>& perms, const NodePath& node_path);

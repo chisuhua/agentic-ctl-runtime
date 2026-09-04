@@ -7,7 +7,7 @@
 **翻牌时点状态分类**：
 | 决策 | 节点/字段 | 当前状态 | 备注 |
 |------|----------|:---:|------|
-| **D1** | `stream: true` 扩展到所有 tool_call/shell.exec/dsl_call | ❌ 未实施 | parser 无 `stream:` 全局支持证据；仅 LLM `dsl_call` 已 ship（[dsl.md §5.5.3](../../specs/dsl.md)）|
+| **D1** | `stream: true` 扩展到所有 tool_call/dsl_call (shell_exec 留 W5) | ✅ **阶段 A + 阶段 B ship** | 阶段 A (2026-09-03 commit `c61a6d0`): parser 字段透传. 阶段 B (2026-09-04): IStreamHandle L1 契约层 + BufferedStreamHandle/CallbackStreamHandle 参考实现 + NodeExecutor `set_stream_sink()` 注入点 + 2 类节点 (tool_call/dsl_call) V1 切片回放. shell_exec NodeType 不存在 (per `node.h:22-34` NodeType 枚举), W5 parser 提案交付 |
 | **D2** | `$var` 替代 `{{ }}` | ⏸ N/A | 触发条件 parse-valid < 85%；[2026-09-02 Evidence Gate 决议 = Conditional](../../audits/2026-09-02-evidence-gate-v1.md) (mock 88.24% ∈ [85,90)) → 未触发 |
 | **D3** | `declarative style` (`exec:` 语法糖) | ✅ **已 ship** | `src/modules/parser/declarative_style.{h,cpp}` (C6: ADR-0072 D3 标注) + `markdown_parser.cpp:164,198` 集成钩子 + `tests/test_dsl_extensions.cpp` |
 | **D4** | `backend:` 字段 | ❌ 未实施 | parser 无 `backend:` 字段证据；ADR-0075 D4 backend_policy.h 已 ship 但 DSL 解析器未对接 |

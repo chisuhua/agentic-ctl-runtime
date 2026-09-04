@@ -118,6 +118,43 @@ Context NodeExecutor::execute_assign(const AssignNode* node, const Context& ctx)
 Context NodeExecutor::execute_dsl_node(const DSLNode* node, const Context& ctx) {
     Context new_context = ctx;
 
+    // ADR-0072 D1 阶段 B: stream 分支 (V1 切片回放, per Oracle B3 诚实化语义)
+    // 触发条件: metadata["stream"] 严格 JSON bool true AND stream_sink_ 已注入
+    bool stream_requested = node->metadata.is_object() &&
+        node->metadata.contains("stream") &&
+        node->metadata["stream"].is_boolean() &&
+        node->metadata["stream"].get<bool>();
+
+    if (stream_requested && stream_sink_ == nullptr) {
+        std::cerr << "[WARN] stream:true ignored: no sink registered for node: "
+                  << node->path << std::endl;
+    }
+
+    if (stream_requested && stream_sink_ != nullptr && !node->output_keys.empty()) {
+        // V1: 内联同步路径 (避免新增 execute_dsl_node_sync 重复声明)
+        // 走完后切片 key 输出值至 sink, 然后 close(nullopt) 标记 EOF
+        if (ctx.contains(node->output_keys[0])) {
+            new_context[node->output_keys[0]] = ctx[node->output_keys[0]];
+        } else {
+            std::string rendered_prompt = InjaTemplateRenderer::render(node->prompt_template, ctx);
+            nlohmann::json result = tool_registry_.call_llm_tool(
+                node->llm_tool_name, rendered_prompt, node->llm_params);
+            if (!result.value("success", false)) {
+                throw std::runtime_error("LLM generation failed: " +
+                    result.value("error", "Unknown error"));
+            }
+            new_context[node->output_keys[0]] = result["text"].get<std::string>();
+        }
+        // 切片输出值推送至 sink
+        std::string text = new_context[node->output_keys[0]].dump();
+        for (size_t offset = 0; offset < text.size(); offset += kStreamChunkSize) {
+            stream_sink_->push(text.substr(offset,
+                std::min(kStreamChunkSize, text.size() - offset)));
+        }
+        stream_sink_->close(std::nullopt);
+        return new_context;
+    }
+
     if (node->output_keys.empty()) {
         throw std::runtime_error("DSLNode has no output_keys: " + node->path);
     }
@@ -174,6 +211,42 @@ Context NodeExecutor::execute_dsl_node(const DSLNode* node, const Context& ctx) 
 }
 
 Context NodeExecutor::execute_tool_call(const ToolCallNode* node, const Context& ctx) {
+    // ADR-0072 D1 阶段 B: stream 分支 (V1 切片回放, per Oracle B3 诚实化语义)
+    bool stream_requested = node->metadata.is_object() &&
+        node->metadata.contains("stream") &&
+        node->metadata["stream"].is_boolean() &&
+        node->metadata["stream"].get<bool>();
+
+    if (stream_requested && stream_sink_ == nullptr) {
+        std::cerr << "[WARN] stream:true ignored: no sink registered for node: "
+                  << node->path << std::endl;
+    }
+
+    if (stream_requested && stream_sink_ != nullptr) {
+        // V1: 内联同步路径, 完成后切片 tool_result.data 至 sink
+        std::unordered_map<std::string, std::string> rendered_args;
+        for (const auto& [key, tmpl] : node->arguments) {
+            rendered_args[key] = InjaTemplateRenderer::render(tmpl, ctx);
+        }
+        if (!tool_registry_.has_tool(node->tool_name)) {
+            throw std::runtime_error("Tool '" + node->tool_name + "' not registered for node: " + node->path);
+        }
+        auto [tool_result, new_context] = dispatch_to_tool(node->tool_name, node->path, rendered_args);
+        new_context = ctx;
+        if (!tool_result.ok && !handle_tool_errors(node, tool_result)) {
+            return new_context;
+        }
+        process_output_keys(new_context, node->output_keys, tool_result.data);
+        // 切片 tool_result.data.dump() 推送至 sink
+        std::string text = tool_result.data.dump();
+        for (size_t offset = 0; offset < text.size(); offset += kStreamChunkSize) {
+            stream_sink_->push(text.substr(offset,
+                std::min(kStreamChunkSize, text.size() - offset)));
+        }
+        stream_sink_->close(std::nullopt);
+        return new_context;
+    }
+
     // 渲染参数
     std::unordered_map<std::string, std::string> rendered_args;
     for (const auto& [key, tmpl] : node->arguments) {

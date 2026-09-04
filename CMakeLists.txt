@@ -141,6 +141,7 @@ add_subdirectory(src/common/policy)
 add_subdirectory(src/common/tools)
 add_subdirectory(src/common/governance)
 add_subdirectory(src/common/governance/cross_cutting)
+add_subdirectory(src/common/runtime)  # ADR-0072 D1 阶段 B: IStreamHandle 参考实现
 
 # Phase 1 公共头文件占位 (W1D2.5 启动前置, 见 .omo/plans/phase1-execution.md §W1D2.5.T1)
 # 每个子目录定义为 INTERFACE library, 命名 agenticdsl_hdr_<module> 避免与 src/ 实现库冲突
@@ -174,6 +175,7 @@ src/core/agent_registry.cpp         # P7: IAgentRegistry InMemory 参考实现 (
 target_link_libraries(agenticdsl_core
  agenticdsl_includes
  agenticdsl_common
+ agenticdsl_runtime  # ADR-0072 D1 阶段 B: IStreamHandle 参考实现
  agenticdsl_modules_parser
  agenticdsl_modules_context
  agenticdsl_modules_budget
