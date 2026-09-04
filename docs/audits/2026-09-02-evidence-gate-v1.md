@@ -5,6 +5,8 @@
 > **OpenSpec change**: `from-roadmap-phase-6c-evidence-gate`
 > **Author**: Solo Dev (Single-Developer Mode)
 > **Status**: ⏳ **Conditional placeholder** (MOMUS 修正后 X 路线 ship — 真实 3 模型 baseline 决议推迟至 Sprint 25+)
+>
+> **2026-09-04 更新**: 重测脚本工具链已 ship (`phase-7a-baseline-retest-v2` change): `scripts/measure-baseline.py` + `scripts/evidence-gate-v1.sh` + `tools/baseline_schema_validate.py`。等待 §1 触发信号 (`docs/runbooks/baseline-retest.md`) 后即可执行真实 3 模型 baseline 重测。
 > **Verdict scope (X 路线 per design D-3/D-4)**: parse_valid 单维度决议 + 数据完整性 check；task_success L1/L2/L3 仅签名占位（完整 D-4 "全部满足"语义由 ADR-0074 §决策 D5 v2 amendment 实施）
 
 ---

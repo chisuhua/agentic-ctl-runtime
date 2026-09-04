@@ -44,7 +44,14 @@ jobs:
             build-essential \
             ninja-build \
             python3 \
+            python3-pip \
+            jq \
             libyaml-cpp-dev
+
+      - name: Install Python dependencies (phase-7a-baseline-retest-v2)
+        # ADR-0074 D5 v2 semantics — baseline schema validation (jsonschema)
+        run: |
+          pip install -r requirements.txt
 
       - name: Clone async dependencies (async_simple + taskflow)
         # external/async_simple/ 和 external/taskflow/ 在 .gitignore 中,

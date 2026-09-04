@@ -44,7 +44,6 @@
 
 **真实 3 模型 baseline 重测**: `docs/runbooks/baseline-retest.md` 4 部分契约定义触发信号 + 重测 runbook + Evidence Gate 重跑 + 容量预算 (≤8h/次) + 失败 fallback（per Change #5）。
 
-**Sprint 25 carry-over (Sprint 25+)**:
 - U2 (Skill 集成, 6h, P2)
 - U3 (README, 6h, P2)
 - **U4 ✅ closed (2026-09-03)** — AgentForge 第 2 domain agent (`doc_writer`) ship (HydraForge 端 zero code change; 3 atomic commits in `/workspace/project/AgentForge` repo: `dfc6882` refactor + `7b4330c` agents + `2e10104` docs; 11/11 tests / 34 assertions pass) — **Phase 7a C1 解锁**
@@ -55,10 +54,11 @@
 - ADR-0072 D6 (条件触发, Conditional 决议触发)
 - ADR-0062/0063/0064/0065/0071/0074/0075 Approved >24h 无 tracking change (drift 检测警告, 留 Sprint 25+ 跟踪)
 - Master Plan §十-§十三 4 章节缺失（pre-existing drift）✅ closed 2026-09-03 — 已在 `docs/superpowers/plans/2026-07-24-sprint-24-25-demo-driven-plan.md` 补登并归档 change `2026-09-03-fix-master-plan-review-gates-sections`
+- **真实 3 模型 baseline 重测脚本工具链 ✅ closed 2026-09-04 (Route B `phase-7a-baseline-retest-v2`)** — 3 脚本 (`scripts/measure-baseline.py` + `scripts/evidence-gate-v1.sh` + `tools/baseline_schema_validate.py`) + Catch2 测试 6/6 PASS + requirements.txt + runbook §2/§3 flag 修正. **真实测量本身仍待 §1 触发信号 (外部模型窗口), 不阻塞工具链 ship**
 
 **Phase 7a 启动复评触发条件** (C1+C5 转 PASS 且 C2 不下降, per roadmap.md Q2b):
 - **C1 (AgentForge ≥2 agents) — ✅ PASS (2026-09-03 U4 ship)** `coding_assistant` + `doc_writer` 共存 (11/11 tests pass in AgentForge)
-- C5 (Evidence Gate 真实 PASS) — 真实 baseline 重测 + Evidence Gate 重跑解锁
+- C5 (Evidence Gate 真实 PASS) — 脚本工具链已 ship (2026-09-04, `phase-7a-baseline-retest-v2`), 待真实 baseline 重测 + Evidence Gate 重跑 (per runbook §1 触发信号) 解锁
 - C2 (Solo Dev ≥2 人 OR ≥80h/双周) — 外部约束, 不下降即可复评
 
 ---

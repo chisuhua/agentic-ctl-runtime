@@ -1,0 +1,3 @@
+# Phase 7a baseline retest Python dependencies
+# ADR-0074 D5 v2 semantics (parse_valid + L1/L2/L3) validation
+jsonschema>=4.18,<5.0

@@ -214,6 +214,13 @@ if(TEST test_measure_prompt_baseline)
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 endif()
 
+# phase-7a-baseline-retest-v2 — baseline retest 脚本测试 spawn 相对路径
+# scripts/evidence-gate-v1.sh, 需以仓库根为工作目录
+if(TEST test_baseline_retest_scripts)
+    set_tests_properties(test_baseline_retest_scripts PROPERTIES
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+endif()
+
 # T21 — test_prompt_evidence_gate 需以仓库根为工作目录
 # (lib/prompt/few_shots + lib/prompt/golden 相对路径 + python 工具调用)
 if(TEST test_prompt_evidence_gate)

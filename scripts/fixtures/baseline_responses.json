@@ -1,0 +1,33 @@
+{
+  "_comment": "Phase 7a baseline retest deterministic mock fixtures (per Metis H6: 独立 fixtures). 实际为 3 模型 × 1 task (auth_01) 成功响应 + 3 个 fail 场景键 + 默认 fallback (measure-baseline.py mock_call_model 对未列 task 返回 100% 成功, per spec Case A 场景). 覆盖 PASS / Conditional / FAIL 场景由测试文件 write_baseline() 直接构造 JSON 驱动 (见 tests/test_baseline_retest_scripts.cpp).",
+  "claude-opus-4.5:auth_01": {
+    "response": "mock response claude auth_01",
+    "parse_valid": true,
+    "task_success": {"L1": true, "L2": true, "L3": true}
+  },
+  "kimi-k2.6:auth_01": {
+    "response": "mock response kimi auth_01",
+    "parse_valid": true,
+    "task_success": {"L1": true, "L2": true, "L3": true}
+  },
+  "gpt-5:auth_01": {
+    "response": "mock response gpt-5 auth_01",
+    "parse_valid": true,
+    "task_success": {"L1": true, "L2": true, "L3": true}
+  },
+  "fail_low_parse": {
+    "response": "mock response for fail_low_parse",
+    "parse_valid": false,
+    "task_success": {"L1": false, "L2": false, "L3": false}
+  },
+  "fail_low_l1": {
+    "response": "mock response for fail_low_l1",
+    "parse_valid": true,
+    "task_success": {"L1": false, "L2": true, "L3": true}
+  },
+  "fail_low_l2": {
+    "response": "mock response for fail_low_l2",
+    "parse_valid": true,
+    "task_success": {"L1": true, "L2": false, "L3": true}
+  }
+}

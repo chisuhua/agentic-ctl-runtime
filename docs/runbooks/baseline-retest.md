@@ -1,9 +1,9 @@
-# 真实 3 模型 Baseline 重测 Runbook (Sprint 25 Change #5)
+# 真实 3 模型 Baseline 重测 Runbook (Sprint 25 Change #5 + phase-7a-baseline-retest-v2)
 
 > **目的**: Evidence Gate Conditional → PASS 的唯一可代码解锁路径
-> **Status**: 🔄 Active (per Oracle session `ses_f9ab25dcfffetx4J5UFA7JYBKV` P1 建议 + roadmap.md Q3 wait-condition)
+> **Status**: 🔄 Active — **脚本工具链已 ship (2026-09-04, `phase-7a-baseline-retest-v2` change)**, 等待 §1 触发信号
 > **Owner**: Solo Dev (Single-Developer Mode)
-> **最后更新**: 2026-09-03
+> **最后更新**: 2026-09-04
 
 ---
 
@@ -41,20 +41,20 @@ EOF
 
 ## §2 重测 Runbook (Baseline Measurement)
 
-**入口命令**（per Phase 6c `from-roadmap-phase-6c-execution-baseline` 工具链）:
+**入口命令**（per `phase-7a-baseline-retest-v2` change 2026-09-04 ship 的脚本工具链）:
 
 ```bash
 # 1. 环境检查（依赖 + 模型可达）
 python3 scripts/measure-baseline.py --check-env \
   --models claude-opus-4.5,kimi-k2.6,gpt-5 --mode real
 
-# 2. 全量测量（3 模型 × 4 维度 × 50 tasks = 600 样本）
+# 2. 全量测量（3 模型 × 4 维度 × 54 tasks × 3 prompts = 1944 样本, --concurrency 默认 3）
 python3 scripts/measure-baseline.py \
   --models claude-opus-4.5,kimi-k2.6,gpt-5 \
   --mode real \
-  --prompts lib/prompt/v1_schema,lib/prompt/v2_fewshot,lib/prompt/v3_two_phase \
+  --prompts v1_schema,v2_fewshot,v3_two_phase \
   --dimensions structured,tool_call,error_recovery,long_context \
-  --tasks docs/baselines/golden-suite-50.yaml \
+  --tasks-dir lib/prompt/golden/ \
   --output docs/baselines/baseline-real-$(date +%Y-%m-%d).json
 
 # 3. 输出 JSON schema 校验
@@ -63,7 +63,7 @@ python3 tools/baseline_schema_validate.py \
 ```
 
 **预期输出**:
-- `docs/baselines/baseline-real-<date>.json` 含 600 个样本的 parse-valid + task-success L1/L2/L3 数据
+- `docs/baselines/baseline-real-<date>.json` 含 1944 个样本的 parse-valid + task-success L1/L2/L3 数据 (3 models × 4 dims × 54 tasks × 3 prompts)
 - 校验通过（exit 0）
 
 ---
@@ -73,18 +73,21 @@ python3 tools/baseline_schema_validate.py \
 **入口命令**:
 
 ```bash
-# 决议脚本（per Phase 6c from-roadmap-phase-6c-evidence-gate change）
-python3 scripts/evidence-gate-v1.sh \
-  docs/baselines/baseline-real-$(date +%Y-%m-%d).json
+# 决议脚本（per phase-7a-baseline-retest-v2 change, bash 脚本用 bash 调用）
+bash scripts/evidence-gate-v1.sh \
+  docs/baselines/baseline-real-$(date +%Y-%m-%d).json \
+  --write-markdown docs/audits/$(date +%Y-%m-%d)-evidence-gate-v1.md
 ```
 
-**预期输出** (per ADR-0074 §决策 D4 阈值):
+**预期输出** (per evidence_gate.h + runbook §3 三带判定, 完整 4 维 FAIL 表 per Oracle B2):
 
 | 决议 | 触发条件 |
 |------|----------|
 | **PASS** | parse-valid ≥90% AND task-success L1 ≥70% AND L2 ≥50% AND L3 ≥30% (3 模型平均) |
-| **Conditional** | parse-valid ∈ [85, 90) AND task-success L1 ≥70% (临界带) |
-| **FAIL** | parse-valid <85% OR task-success L1 <70% |
+| **Conditional** | parse-valid ∈ [85, 90) AND task-success L1 ≥70% (临界带; L2/L3 仅记录) |
+| **FAIL** | parse-valid <85% OR L1 <70% OR (parse-valid ≥90% AND (L2 <50% OR L3 <30%)) |
+
+> **Mock mode 注**: `mock_mode: true` 的 baseline JSON 输入时, verdict 强制 Conditional (占位语义, 不构成真实 PASS — 防 control-plane-eval.py C5 误消费).
 
 **决议结果处理**:
 
@@ -125,6 +128,7 @@ python3 scripts/evidence-gate-v1.sh \
 - **ADR-0074 D4 阈值**: [`docs/adr/adr-0074-prompt-evidence-gate.md`](../adr/adr-0074-prompt-evidence-gate.md) §决策 D4
 - **Phase 6c baseline 工具**: [`openspec/changes/archive/2026-08-18-from-roadmap-phase-6c-execution-baseline/`](../../openspec/changes/archive/2026-08-18-from-roadmap-phase-6c-execution-baseline/)
 - **Phase 6c evidence-gate change**: [`openspec/changes/archive/2026-09-01-from-roadmap-phase-6c-evidence-gate/`](../../openspec/changes/archive/2026-09-01-from-roadmap-phase-6c-evidence-gate/)
+- **重测脚本工具链 (2026-09-04 ship)**: [`phase-7a-baseline-retest-v2 change`](../../openspec/changes/archive/2026-09-04-phase-7a-baseline-retest-v2/) — `scripts/measure-baseline.py` + `scripts/evidence-gate-v1.sh` + `tools/baseline_schema_validate.py`
 - **Sprint 25+ 排期**: [`roadmap.md`](../../roadmap.md) §Phase 7a 启动条件复评触发点
 
 ---
@@ -134,8 +138,8 @@ python3 scripts/evidence-gate-v1.sh \
 按 `roadmap.md` Q2b 决策树：
 
 1. **触发信号**（§1）+ 重测执行（§2）= baseline-real-<date>.json
-2. **Evidence Gate 重跑**（§3）= PASS / Conditional / FAIL
-3. **决议 PASS** → 更新 ADR-0074 + active-status.md → Phase 7a C5 ✅
+2. **Evidence Gate 重跑**（§3）= PASS / Conditional / FAIL (用 `bash scripts/evidence-gate-v1.sh ... --write-markdown`)
+3. **决议 PASS** → `--write-markdown` 生成 `docs/audits/<date>-evidence-gate-v1.md` 含 `Verdict: PASS` → `control-plane-eval.py` C5 自动转 PASS → 更新 ADR-0074 + active-status.md
 4. **决议 Conditional/FAIL** → 保持 Conditional + 重测计划调整（回 §2 拆分维度跑 或 等下一窗口）
 
 **Phase 7a 6 项条件复评**：per `scripts/control-plane-eval.py --dry-run --relaxed`（per Change #2 `--relaxed` 模式让 C2 不阻塞决策）。
