@@ -673,3 +673,40 @@ add_test(
     COMMAND test_dsl_validator_yaml
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/../../..
 )
+
+# U2 (Sprint 25+ carry-over): code-review-run.skill.md v0.3 C++ 集成验证
+# 必须使用 main_skill_test_runner.cpp (支持 --skill-child 早期分支, posix_spawn /proc/self/exe),
+# 否则 posix_spawn 子进程会回跑 Catch2 main 导致递归/失败
+# CATCH_AMALGAMATED_CUSTOM_MAIN 标记使 main_skill_test_runner.cpp 接管 main
+add_executable(test_code_review_skill
+    test_code_review_skill.cpp
+    ${CATCH_INCLUDE_DIR}/catch_amalgamated.cpp
+    ${CATCH_INCLUDE_DIR}/main_skill_test_runner.cpp
+)
+target_compile_definitions(test_code_review_skill PRIVATE
+    CATCH_AMALGAMATED_CUSTOM_MAIN
+    CATCH_CONFIG_ENABLE_ALL_STRINGMAKERS=1
+)
+target_include_directories(test_code_review_skill PRIVATE
+    ${CATCH_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${PROJECT_SOURCE_DIR}/tests   # test_helpers/mock_bus.h
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/external/nlohmann_json/single_include
+)
+target_link_libraries(test_code_review_skill PRIVATE
+    pdk_chat_demo_obj
+    agenticdsl_includes
+    agenticdsl_core
+    agenticdsl_modules_skill_interpreter
+    hydraforge_pdk
+    Threads::Threads
+)
+# dlopen 的插件需解析 agenticdsl_core 符号
+target_link_options(test_code_review_skill PRIVATE -Wl,--export-dynamic)
+add_test(
+    NAME test_code_review_skill
+    COMMAND test_code_review_skill
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)

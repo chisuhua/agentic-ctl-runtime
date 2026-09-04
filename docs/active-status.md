@@ -44,7 +44,7 @@
 
 **真实 3 模型 baseline 重测**: `docs/runbooks/baseline-retest.md` 4 部分契约定义触发信号 + 重测 runbook + Evidence Gate 重跑 + 容量预算 (≤8h/次) + 失败 fallback（per Change #5）。
 
-- U2 (Skill 集成, 6h, P2)
+- **U2 (Skill 集成, 6h, P2)** ✅ closed 2026-09-04 — `code-review-run.skill.md` v0.3 C++ 集成 (OpenSpec `code-review-run-skill-integration` archived): skill 重写为顶层 call_tool 语法 + 测试 `test_code_review_skill` 3 类 Linux 用例 / 15 assertions PASS (fs.read + code_review/run 编排成功 + 缺失文件 InvalidArg + capability 拒绝非致命 stderr 诊断)
 - U3 (README, 6h, P2)
 - **U4 ✅ closed (2026-09-03)** — AgentForge 第 2 domain agent (`doc_writer`) ship (HydraForge 端 zero code change; 3 atomic commits in `/workspace/project/AgentForge` repo: `dfc6882` refactor + `7b4330c` agents + `2e10104` docs; 11/11 tests / 34 assertions pass) — **Phase 7a C1 解锁**
 - **U6 ✅ closed (2026-09-03)** — ADR-0042 🔍 → 🟡 翻牌 ship (commit `622b742`)
