@@ -1,9 +1,9 @@
 # HydraForge 多轮对话架构文档
 
 **生成日期**: 2026-09-04
-**最后验证**: 2026-09-04（v0.4 — 修正 13 处审计发现的代码/数据流错误）
+**最后验证**: 2026-09-04（v0.5 — 第二轮审计修正 3 处：§二.4.1 deque 声明语法 + §二.4.2 is_retryable_error 位置 + §三.3 meta/args 区分）
 **作者**: Architecture Working Group
-**状态**: 🔍 Proposed（草案 v0.4）
+**状态**: 🔍 Proposed（草案 v0.5）
 
 **关联文档**:
 - `docs/architecture/usage-flow-issues.md` — 混淆点与架构缺失清单（本文件锚定到 issues doc）
@@ -328,9 +328,9 @@ TaskSession
   TaskSession_0 保持，指针不变
 ```
 
-**deque 地址稳定性**（`src/core/types/session.h`）：
+**deque 地址稳定性**（`src/core/types/session.h:143`）：
 ```cpp
-deque<UserSession::TaskSession> …  // push_back 不重新分配，指针稳定
+std::deque<TaskSession> task_sessions_;  // deque 确保 current_task_session_ 地址稳定
 ```
 
 #### 2.4.2 失败自动分裂
@@ -345,7 +345,7 @@ if (task_sess_ptr->determine_failure_mode() == TaskSession::FailureMode::NewSess
 // ② 实际计数（engine.cpp:488）：每轮执行后递增
 task_sess_ptr->record_failure(result);
 
-// ③ 计数规则（tool_result.h:150-159 is_retryable_error）：
+// ③ 计数规则（session.h:148-159 is_retryable_error）：
 //    仅 Retry / Timeout / ResourceExhausted 递增 failure_count_
 ```
 
@@ -458,18 +458,25 @@ cd build/examples/pdk_chat_demo/tests
 {"turn": 1, "decision": "respond", "session_id": "sess_d9b22ea5..."}
 ```
 
-#### loop.done（chat_session.cpp:366-373 发射）
+#### loop.done（chat_session.cpp:366-373 发射；EventBuilder args=业务字段 / meta=session_id）
 ```json
+// args（业务字段）
 {"response": "好的，我已经帮你写入文件...", "total_steps": 1, "total_tokens": 42}
+// meta（trace 上下文）
+{"session_id": "sess_d9b22ea5..."}
 ```
 
-#### session.persist_request（chat_session.cpp:400-403 发射）
+#### session.persist_request（chat_session.cpp:400-403 发射；EventBuilder args=业务字段 / meta=session_id）
 ```json
+// args（业务字段）
 {"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
+// meta（trace 上下文）
+{"session_id": "sess_d9b22ea5..."}
 ```
 
-#### session.persisted（chat_session.cpp:522-531 发射，仅在原子 rename 成功后）
+#### session.persisted（chat_session.cpp:522-531 发射，仅在原子 rename 成功后；EventBuilder args=业务字段 / meta=session_id）
 ```json
+// args（业务字段）
 {"session_id": "sess_d9b22ea5e8512625f437bfc5c5cb2eb5", "path": "~/.hydraforge/sessions/sess_d9b22ea5.json"}
 ```
 
@@ -686,3 +693,13 @@ cat ~/.hydraforge/sessions/sess_*.json | python3 -m json.tool | head -30
 | 11 | Loop 选择改为加载 .agent.md 文件（非类实例化）|
 | 12 | 取消链行号核实（signal_handler:75-82, main loop:548 等）|
 | 13 | chat() vs engine.run() 全文重构（嵌入式 A 走 engine.run，CLI C 走 call_tool）|
+
+---
+
+## 变更记录（v0.4 → v0.5 第二轮审计修正）
+
+| # | 修正内容 |
+|---|---------|
+| 14 | §二.4.1 deque 声明语法纠正：`deque<UserSession::TaskSession>` → `std::deque<TaskSession> task_sessions_`（session.h:143）|
+| 15 | §二.4.2 `is_retryable_error` 文件引用纠正：`tool_result.h:150-159` → `session.h:148-159` |
+| 16 | §三.3 事件 payload 明确 args/meta 区分（chat_session.cpp 发射的 3 个事件：loop.done / session.persist_request / session.persisted）|
