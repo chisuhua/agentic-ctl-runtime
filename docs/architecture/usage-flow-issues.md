@@ -1,9 +1,9 @@
 # HydraForge 混淆点与架构缺失清单
 
 **生成日期**: 2026-09-04
-**最后验证**: 2026-09-04（v0.2 — 同步源文档 `docs/guides/usage-flow-architecture.md` v0.4 修正状态：混淆点 4 标记已解决）
+**最后验证**: 2026-09-04（v0.3 — 同步最新 ship 状态：G3 U4 doc_writer / G9 Phase 7a 不启动 / G6 ADR-0081 ✅；新增 5 个混淆点解决方案）
 **作者**: Architecture Working Group
-**状态**: 🔍 Proposed（草案 v0.2）
+**状态**: 🔍 Proposed（草案 v0.3）
 
 **关联文档**:
 - `docs/guides/usage-flow-architecture.md` — 用户视角入口架构文档（本文件的问题来源）
@@ -23,6 +23,12 @@
 
 > **源文档演进说明**：源文档 v0.1 → v0.2（拆分出本文件）→ v0.3（聚焦多轮对话 + 实证）→ v0.4（修正 13 处数据流错误）。其中混淆点 4（ChatSession 直连 LLM）所涉及的数据流已在 v0.4 源文档中正确反映为 `call_tool("loop/run")` 路径，标记为已解决。
 
+> **新增 2026-09-04 v0.3 更新**:
+> - **G3**: U4 AgentForge 第 2 agent (doc_writer) 已 ship → Phase 7a C1 解锁（roadmap.md §U4）
+> - **G9**: Phase 7a MCP Server 结构性**不启动**（3/6 条件 FAIL — Solo Dev ≥2 人 ❌, Evidence Gate Conditional ❌ — `docs/audits/2026-09-02-control-plane-eval-v1.md`，每 Sprint 收官重跑）
+> - **G6**: ADR-0081 ✅ Approved (2026-08-22 Batch 2 P3) — IAgentHookRegistry V1 骨架 ship
+> - 新增 5 个混淆点（#2/#3/#6/#7/#8）的解决方案表；#1/#5 标注为"不可解（架构事实）"
+
 ---
 
 ## §一 混淆/不清点（8 个）
@@ -31,6 +37,7 @@
 
 | 维度 | 内容 |
 |------|------|
+| **状态** | ℹ️ 不可解（architectural fact — 两个独立 5 层系统，编号体系不同是设计事实）|
 | **现象** | 新 contributor 读文档时发现两套"5 层"说法，容易混淆 |
 | **代码证据** | OS 视角（`docs/specs/architecture.md:65-149`）：L0 Runtime Core / L1 OS Services / L2 Plugin Tools / L3 PDK Contract / L4 Agent App；编排视角（`docs/architecture/agent-orchestration-architecture-2026-08.md:14-49`）：编排层 / 行为编排层 / 认知执行层 / 领域执行层 / 可观测层 |
 | **文档证据** | `docs/specs/architecture.md` §2.1 五层抽象；`docs/architecture/agent-orchestration-architecture-2026-08.md` §一 编排全景 |
@@ -43,11 +50,13 @@
 
 | 维度 | 内容 |
 |------|------|
+| **状态** | ✅ 部分解决（"MCP" 在项目内主指 ADR-0076；外部标准需文档隔离）|
 | **现象** | "MCP" 在项目中出现时，可能指：1. 外部标准 MCP（Model Context Protocol）；2. LayeredContext 等自研协议；3. ADR-0076 DSL Engine as MCP Server |
 | **代码证据** | `docs/adr/adr-0076-dsl-engine-mcp-server.md` — DSL Engine as MCP Server（Proposed）；`docs/specs/architecture.md:51` — MCP 作为 SOTA 对比表格中的外部框架 |
 | **文档证据** | ADR-0076 描述："DSL Engine as MCP Server 控制面（D1 stdio+HTTP+SSE + D2 静态 token）"；`capability-application-map-2026-08.md` G9："ADR-0076 DSL Engine as MCP Server → B5 DSL-as-MCP-tool" |
 | **解释** | "MCP" 在此项目中通常指 ADR-0076（HydraForge 作为 MCP Server），而非外部标准协议。但文档中可能出现歧义。 |
 | **建议理解方式** | 看到"MCP"先判断上下文，是 HydraForge 的 MCP Server 特性还是外部标准；ADR-0076 目前状态是 🔍 Proposed，未 ship |
+| **澄清建议** | 1. 文档统一用 "MCP (Model Context Protocol)" 指外部标准；2. 项目内 MCP Server 用 "DSL Engine as MCP Server" 或 "MCP 控制面"；3. LayeredContext 等内部协议不要使用 "MCP" 缩写 |
 
 ---
 
@@ -55,11 +64,17 @@
 
 | 维度 | 内容 |
 |------|------|
+| **状态** | ✅ 部分解决（V1 posix_spawn 已 ship，V2 Wasm deferred） |
 | **现象** | SKILL.md 可以用 posix_spawn / Wasm / in-process 三种方式执行，文档描述不一致 |
 | **代码证据** | `include/agenticdsl/skill/skill_interpreter.h:50-90` — SkillInterpreter 定义；`pdk/loop_agent/src/pdk_entry.cpp` — 当前 loop_agent 用 ReactLoop 并非真实 SKILL |
 | **文档证据** | `docs/specs/architecture.md:385-443` — Form::Skill 描述；ADR-0066（SkillInterpreter 架构）状态: 🟡 Partial（V1 ship，V2 deferred）|
 | **解释** | V1：posix_spawn 进程隔离；V2（deferred）：Wasm 沙箱；in-process：直接调用（无隔离，不推荐） |
 | **建议理解方式** | 当前生产代码用 ReactLoop/PlanExecuteLoop/ForkJoinLoop；SkillInterpreter V1 已 ship，但 loop_agent 尚未集成真实 SKILL 执行；隔离级别：posix_spawn > in-process（无隔离）|
+| **澄清建议（三层对照表）** |  |
+| **隔离级别** | **实现** | **状态** | **适用** |
+| | **L1**: posix_spawn + seccomp(BPF) | SkillInterpreter V1 | ✅ ship (2026-07-22, ADR-0066) | 生产可信代码 |
+| | **L2**: Wasm 沙箱 | WasmRuntime V2 | 🔍 Proposed (ADR-0056 V2 deferred Phase 8+) | 不可信第三方代码 |
+| | **L3**: in-process (无隔离) | loop_agent 当前使用 | ⚠️ 仅限可信自研代码 | 不推荐生产 |
 
 ---
 
@@ -80,6 +95,7 @@
 
 | 维度 | 内容 |
 |------|------|
+| **状态** | ℹ️ 不可解（architectural fact — 两个独立 5 层系统） |
 | **现象** | LayeredContext 的 L1-L5 和 OS 架构的 L0-L4 都叫"5 层"，但编号差 1 |
 | **代码证据** | `include/agenticdsl/types/layered_context.h` — L1 system / L2 user / L3 task / L4 node / L5 raw；`docs/specs/architecture.md:145-149` — L0 Runtime Core / L1 OS Services / L2 Plugin Tools / L3 PDK Contract / L4 Agent App |
 | **文档证据** | ADR-0008（LayeredContext）定义 5 层；`docs/specs/architecture.md` 定义 OS 5 层 |
@@ -92,12 +108,18 @@
 
 | 维度 | 内容 |
 |------|------|
+| **状态** | ✅ 已澄清（ADR-0031 §决策 5 + ADR-0069 Hook 注入）|
 | **现象** | 两者都负责工具调用，但职责不清 |
 | **代码证据** | `src/common/tools/tool_coordinator.cpp:349` — `ToolCoordinator::execute(meta, ctx, args, token)`；`include/agenticdsl/contract/itool_registry.h` — 9 虚函数接口 |
 | **ToolCoordinator 职责** | 1. layer check（检查是否允许某 layer 的工具）；2. ApprovalHandler 调用（审批决策）；3. audit 事件发射（记录调用）；4. 调用 ToolRegistry |
 | **IToolRegistry 职责** | 1. 工具注册（register_tool_function）；2. 工具查询（has_tool）；3. 实际调用（call_tool）|
 | **解释** | ToolCoordinator 是 Middleware，IToolRegistry 是基础设施。ToolCoordinator 在 IToolRegistry 之上加了一层政策检查。 |
 | **建议理解方式** | 需要加 policy/approval/audit → 用 ToolCoordinator；需要基础注册/调用 → 用 IToolRegistry |
+| **澄清建议（职责对照表）** |  |
+| **组件** | **职责** | **何时用** |
+| | `IToolRegistry` | 注册、查询、调用工具 | 框架基础设施 |
+| | `ToolCoordinator` | layer check + audit + approval + hook 注入 | 业务调用方 |
+| | `IToolHookRegistry` | pre/post hook (side-effect: 修改参数/拒绝) | PDK plugin 拦截工具调用 |
 
 ---
 
@@ -105,11 +127,18 @@
 
 | 维度 | 内容 |
 |------|------|
+| **状态** | ✅ 已澄清（ADR-0031 §决策 5/6） |
 | **现象** | 三种执行模式在代码中如何对应实际审批决策 |
 | **代码证据** | `src/common/policy/execution_policy.h` — PlanPolicy / AgentPolicy / YoloPolicy；`src/common/policy/approval_handler.cpp` — process_request 实现 |
 | **三模式含义** | Plan：仅 plan 阶段审批；Agent：仅 agent 阶段审批；Yolo：从不审批（⚠️ 危险）|
 | **解释** | Yolo 模式跳过了所有审批流程，直接执行工具，生产环境慎用。 |
 | **建议理解方式** | 记住 Yolo = 无审批 = 危险；生产环境应用 Plan 或 Agent 模式 |
+| **澄清建议（决策矩阵）** |  |
+| **模式** | **审批触发** | **危险度** | **适用** |
+| | Plan | plan 阶段 + agent 阶段 | 🟢 低 | 生产默认 |
+| | Agent | agent 阶段 | 🟡 中 | 可信开发者 |
+| | Yolo | 无审批 | 🔴 高 | 仅调试 |
+| **ModeSwitchDialog 强制 YOLO 切换需用户确认 (ADR-0031 §决策 6)** |
 
 ---
 
@@ -117,10 +146,16 @@
 
 | 维度 | 内容 |
 |------|------|
+| **状态** | ✅ 已澄清（ADR-0020 + ADR-0021） |
 | **现象** | 三者都涉及并行，但含义不同，容易混淆 |
 | **代码证据** | `include/agenticdsl/cognitive/cognitive_worker.h` — CognitiveWorker；`include/agenticdsl/cognitive/domain_worker_pool.h` — DomainWorkerPool；`include/agenticdsl/pdk/agent_loops/fork_join_loop.h` — ForkJoinLoop |
 | **三者区别** | CognitiveWorker：多 agent 隔离执行（jthread + stop_token），用于多用户/多会话隔离；DomainWorkerPool：领域任务并行消费（FIFO 队列 + jthread），用于代码生成 + 测试并行；ForkJoinLoop：分支并行执行（fork → parallel → join），用于多工具并行调用 |
 | **建议理解方式** | 需要多用户隔离 → CognitiveWorker；需要任务队列并行 → DomainWorkerPool；需要分支并行 → ForkJoinLoop |
+| **澄清建议（对比表）** |  |
+| **组件** | **并行粒度** | **隔离模型** | **适用场景** |
+| | `CognitiveWorker` | per-agent | jthread + stop_token | 多 agent 隔离（per-engine DSLEngine）|
+| | `DomainWorkerPool` | per-task (FIFO 队列) | jthread + shared_mutex handler 表 | 领域任务并行消费 |
+| | `ForkJoinLoop` | per-branch (DSL fork) | DSL 层并行 | 工具/分支并行（plan_execute/fork_join）|
 
 ---
 
@@ -155,7 +190,7 @@
 | **缺失内容** | IAgentRegistry 骨架已 ship，但完整 AgentWorker + YAML 配置 + spawn_agent 未实现 |
 | **影响场景** | B2（跨进程多 agent 协作）|
 | **ADR 跟踪** | ADR-0082（V1 骨架已 ship，完整实现 T3+T4 未完成）|
-| **当前状态** | 🔓 Open（前置 IAgentRegistry ✅ 已 ship）|
+| **当前状态** | 🔓 Open（前置 IAgentRegistry ✅ 已 ship，U4 AgentForge doc_writer 已 ship 2026-09-03 → Phase 7a C1 解锁，但 AgentWorker 完整实现 T3+T4 未 ship）|
 
 ---
 
@@ -187,8 +222,8 @@
 |------|------|
 | **缺失内容** | IAgentHookRegistry 骨架已 ship（ADR-0081），但与 Loop 的集成未完成 |
 | **影响场景** | 全部 B/C 类应用的可观测性 |
-| **ADR 跟踪** | ADR-0081（V1 骨架已 ship，loop 集成 T6 未完成）|
-| **当前状态** | 🔓 Open（前置 IAgentHookRegistry ✅ 已 ship）|
+| **ADR 跟踪** | ADR-0081 ✅ Approved (2026-08-22 Batch 2 P3)；loop 集成 T6 未完成 |
+| **当前状态** | 🔓 Open（前置 IAgentHookRegistry V1 骨架 ship 2026-08-22，loop 集成 T6 未 ship）|
 
 ---
 
@@ -221,7 +256,7 @@
 | **缺失内容** | DSL Engine 作为 MCP Server 的完整实现（stdio/HTTP/SSE transport + capability 暴露）|
 | **影响场景** | B5（DSL-as-MCP-tool）|
 | **ADR 跟踪** | ADR-0076（🔍 Proposed）|
-| **当前状态** | 🔓 Open（gated by active-status.md §四）|
+| **当前状态** | 🔒 Blocked（Phase 7a **结构性不启动** — 2026-09-02 实测 3/6 条件 FAIL：Solo Dev ≥2 人 ❌, Evidence Gate Conditional ❌ — 见 `docs/audits/2026-09-02-control-plane-eval-v1.md`。每 Sprint 收官重跑 control-plane-eval.py，待三项 FAIL 全部转 PASS 时重新评估）|
 
 ---
 
@@ -271,3 +306,4 @@
 |------|------|------|
 | 2026-09-04 | v0.1 | 首次创建：8 个混淆点 + 9 个架构缺失，从 `usage-flow-architecture.md` v0.1 拆分 |
 | 2026-09-04 | v0.2 | 同步源文档 v0.4：标记混淆点 4（ChatSession 直连 LLM）✅ 已解决；TL;DR 更新源文档引用与演进说明；关联文档表标注 v0.4 |
+| 2026-09-04 | v0.3 | 同步最新 ship 状态：G3 (U4 AgentForge doc_writer ship 2026-09-03, Phase 7a C1 解锁)、G6 (ADR-0081 ✅ Approved 2026-08-22)、G9 (Phase 7a 结构性不启动 — 3/6 FAIL 决议)；为 5 个混淆点（#2/#3/#6/#7/#8）加解决方案/澄清表；#1/#5 标注为"不可解（架构事实）" |
