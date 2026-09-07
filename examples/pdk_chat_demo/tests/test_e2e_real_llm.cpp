@@ -1,6 +1,6 @@
 // tests/test_e2e_real_llm.cpp
-// pdk_chat_demo 真实 LLM 端到端集成测试 (minimax)
-// 需要 MINIMAX_API_KEY 环境变量；未设置时自动跳过
+// pdk_chat_demo 真实 LLM 端到端集成测试 (DeepSeek 优先，回退 MINIMAX)
+// 需要 DEEPSEEK_API_KEY 或 MINIMAX_API_KEY 环境变量；未设置时自动跳过
 // 关联: docs/examples/pdk_chat_demo/DESIGN.md §8.1 "Real LLM"
 
 #include "catch_amalgamated.hpp"
@@ -66,45 +66,59 @@ static std::string ptr_to_str(void* p) {
     return ss.str();
 }
 
-TEST_CASE("Real LLM: minimax-text-01 responds to a simple prompt", "[e2e][realllm]") {
+TEST_CASE("Real LLM: deepseek-v4-flash responds to a simple prompt", "[e2e][realllm]") {
     const char* run_real_llm = std::getenv("HYDRAFORGE_RUN_REAL_LLM");
     if (!run_real_llm || std::string(run_real_llm) != "1") {
         WARN("Set HYDRAFORGE_RUN_REAL_LLM=1 to run real LLM tests");
         return;
     }
 
-    const char* api_key = std::getenv("MINIMAX_API_KEY");
-    if (!api_key || api_key[0] == '\0') {
-        WARN("MINIMAX_API_KEY not set — skipping real LLM test");
-        return;
+    std::string provider, model, api_url, api_endpoint, env_used;
+    const char* deepseek_key = std::getenv("DEEPSEEK_API_KEY");
+    if (deepseek_key && deepseek_key[0] != '\0') {
+        provider     = "deepseek";
+        model        = "deepseek-v4-flash";
+        api_url      = "https://api.deepseek.com";
+        api_endpoint = "/chat/completions";
+        env_used     = "DEEPSEEK_API_KEY";
+    } else {
+        const char* api_key = std::getenv("MINIMAX_API_KEY");
+        if (!api_key || api_key[0] == '\0') {
+            WARN("DEEPSEEK_API_KEY and MINIMAX_API_KEY both unset — skipping real LLM test");
+            return;
+        }
+        provider     = "minimax";
+        model        = "minimax-text-01";
+        api_url      = "https://api.minimax.chat";
+        api_endpoint = "/v1/chat/completions";
+        env_used     = "MINIMAX_API_KEY";
     }
+    INFO("Using provider=" << provider << " model=" << model
+         << " via " << env_used);
 
-    // 1. 构造 minimax LLMConfig
     agenticdsl::LLMConfig llm_cfg;
-    llm_cfg.provider = "minimax";
-    llm_cfg.model = "minimax-text-01";
-    llm_cfg.api_url = "https://api.minimax.chat";
-    llm_cfg.api_endpoint = "/v1/chat/completions";
-    llm_cfg.api_key = api_key;
-    llm_cfg.max_tokens = 512;
-    llm_cfg.temperature = 0.7f;
+    llm_cfg.provider     = provider;
+    llm_cfg.model        = model;
+    llm_cfg.api_url      = api_url;
+    llm_cfg.api_endpoint = api_endpoint;
+    llm_cfg.api_key      = (provider == "deepseek") ? deepseek_key
+                                                     : std::getenv("MINIMAX_API_KEY");
+    llm_cfg.max_tokens    = 512;
+    llm_cfg.temperature   = 0.7f;
     llm_cfg.timeout_seconds = 30;
-    llm_cfg.max_retries = 1;
+    llm_cfg.max_retries   = 1;
 
-    // 2. 通过工厂创建 CloudLLMAdapter
     agenticdsl::LLMProviderFactory factory;
     auto llm = factory.create(llm_cfg);
     REQUIRE(llm != nullptr);
 
-    // 3. 发送简单对话
     agenticdsl::GenerationRequest req("Say hello in one short sentence.");
-    req.params.model = "minimax-text-01";
+    req.params.model = model;
     req.params.max_tokens = 512;
     req.params.temperature = 0.7;
 
     auto result = llm->generate(req, std::stop_token{});
 
-    // 4. 验证结果
     if (!result.has_value()) {
         auto& err = result.error();
         FAIL("LLM generate failed: code=" << static_cast<int>(err.code)
@@ -113,7 +127,6 @@ TEST_CASE("Real LLM: minimax-text-01 responds to a simple prompt", "[e2e][realll
     REQUIRE(result.has_value());
     auto& gv = result.value();
     REQUIRE_FALSE(gv.text.empty());
-    // 期望响应包含 hello 或问候相关
     bool contains_greeting = false;
     std::string lower;
     for (char c : gv.text) lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
@@ -123,23 +136,34 @@ TEST_CASE("Real LLM: minimax-text-01 responds to a simple prompt", "[e2e][realll
         contains_greeting = true;
     }
     REQUIRE(contains_greeting);
-    // token 计数应 > 0
-    // 注意: minimax 可能不返回 usage 统计，以实际响应为准
     INFO("response: " << gv.text);
     INFO("prompt_tokens: " << gv.prompt_tokens << ", completion_tokens: " << gv.completion_tokens);
 }
 
-TEST_CASE("Real LLM: ChatSession with minimax responds to user input", "[e2e][realllm][chat]") {
+TEST_CASE("Real LLM: ChatSession with deepseek responds to user input", "[e2e][realllm][chat]") {
     const char* run_real_llm = std::getenv("HYDRAFORGE_RUN_REAL_LLM");
     if (!run_real_llm || std::string(run_real_llm) != "1") {
         WARN("Set HYDRAFORGE_RUN_REAL_LLM=1 to run real LLM tests");
         return;
     }
 
-    const char* api_key = std::getenv("MINIMAX_API_KEY");
-    if (!api_key || api_key[0] == '\0') {
-        WARN("MINIMAX_API_KEY not set — skipping real LLM ChatSession test");
-        return;
+    std::string provider, model, api_url, api_endpoint;
+    const char* deepseek_key = std::getenv("DEEPSEEK_API_KEY");
+    if (deepseek_key && deepseek_key[0] != '\0') {
+        provider     = "deepseek";
+        model        = "deepseek-v4-flash";
+        api_url      = "https://api.deepseek.com";
+        api_endpoint = "/chat/completions";
+    } else {
+        const char* api_key = std::getenv("MINIMAX_API_KEY");
+        if (!api_key || api_key[0] == '\0') {
+            WARN("DEEPSEEK_API_KEY and MINIMAX_API_KEY both unset — skipping real LLM ChatSession test");
+            return;
+        }
+        provider     = "minimax";
+        model        = "minimax-text-01";
+        api_url      = "https://api.minimax.chat";
+        api_endpoint = "/v1/chat/completions";
     }
 
     setenv("HYDRAFORGE_LOOP_DIR", find_loop_dir().c_str(), 1);
@@ -154,15 +178,16 @@ TEST_CASE("Real LLM: ChatSession with minimax responds to user input", "[e2e][re
     REQUIRE(loader.load_so(find_loop_agent_so(), engine->get_tool_registry()));
 
     agenticdsl::LLMConfig llm_cfg;
-    llm_cfg.provider = "minimax";
-    llm_cfg.model = "minimax-text-01";
-    llm_cfg.api_url = "https://api.minimax.chat";
-    llm_cfg.api_endpoint = "/v1/chat/completions";
-    llm_cfg.api_key = api_key;
-    llm_cfg.max_tokens = 512;
-    llm_cfg.temperature = 0.7f;
+    llm_cfg.provider     = provider;
+    llm_cfg.model        = model;
+    llm_cfg.api_url      = api_url;
+    llm_cfg.api_endpoint = api_endpoint;
+    llm_cfg.api_key      = (provider == "deepseek") ? deepseek_key
+                                                     : std::getenv("MINIMAX_API_KEY");
+    llm_cfg.max_tokens    = 512;
+    llm_cfg.temperature   = 0.7f;
     llm_cfg.timeout_seconds = 30;
-    llm_cfg.max_retries = 1;
+    llm_cfg.max_retries   = 1;
 
     agenticdsl::LLMProviderFactory factory;
     auto llm = factory.create(llm_cfg);
@@ -175,25 +200,22 @@ TEST_CASE("Real LLM: ChatSession with minimax responds to user input", "[e2e][re
             {"provider_ptr", ptr_to_str(llm_raw)}});
     REQUIRE(setup.value("success", false) == true);
 
-    // 3. 创建 ChatSession
     AgentConfig agent_cfg;
-    agent_cfg.provider = "minimax";
-    agent_cfg.model = "minimax-text-01";
+    agent_cfg.provider     = provider;
+    agent_cfg.model        = model;
     agent_cfg.system_prompt = "You are a helpful assistant.";
-    agent_cfg.max_steps = 1;
-    agent_cfg.timeout_ms = 60000;
+    agent_cfg.max_steps    = 1;
+    agent_cfg.timeout_ms   = 60000;
     agent_cfg.budget_limit_usd = 0.1;
 
     SessionConfig session_cfg;
-    session_cfg.persist_dir = "";  // 不持久化
+    session_cfg.persist_dir = "";
 
     ChatSession session(engine.get(), bus, &engine->get_tool_registry(),
                         agent_cfg, session_cfg);
 
-    // 4. 发送简单对话
     auto result = session.chat("Say hello in one short sentence.");
 
-    // 5. 验证
     if (!result.success) {
         FAIL("ChatSession chat failed: " << result.error_message);
     }

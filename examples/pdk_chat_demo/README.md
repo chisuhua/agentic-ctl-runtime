@@ -37,14 +37,14 @@ make -j$(nproc)
 User> Write a hello world in C++
 ```
 
-### 真实 LLM 模式（deepseek-v4-pro）
+### 真实 LLM 模式（DeepSeek）
 
 ```bash
-export QIANFAN_API_KEY=sk-...
+export DEEPSEEK_API_KEY=sk-...
 ./build/examples/pdk_chat_demo/pdk_chat_demo
 ```
 
-默认使用 `deepseek` provider + `deepseek-v4-pro` 模型（百炼 API），对话输出真实的 LLM 回复：
+默认使用 `deepseek` provider + `deepseek-v4-flash` 模型（DeepSeek API，OpenAI 兼容协议），对话输出真实的 LLM 回复：
 
 ```
 User> Write a hello world in C++
@@ -77,7 +77,7 @@ demo 同时输出结构化事件日志（时间戳 + topic）：
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
 | `agent.provider` | `"deepseek"` | LLM 提供方 (deepseek/openai/anthropic/mock) |
-| `agent.model` | `"deepseek-v4-pro"` | 模型名 |
+| `agent.model` | `"deepseek-v4-flash"` | 模型名 |
 | `agent.system_prompt` | — | 系统提示词 |
 | `providers` | 4 个预配置 | 各 provider 的 api_url / api_key_env |
 
@@ -162,7 +162,7 @@ ctest -j$(nproc)
 | `'https' scheme is not supported` | cpp-httplib 编译时未启用 SSL | 确认安装了 `libssl-dev` 并重新 cmake |
 | `Connection failed` | API endpoint 路径错误 | 确认 `config.json` 中 `api_endpoint` 正确 |
 | `plugin registration: dangerous category` | ApprovalPolicy 未设置 plan/agent 审批 | 检查各 plugin 的 `ApprovalPolicy` |
-| `LLM generation failed` | API key 无效或未设置 | `echo $QIANFAN_API_KEY` 确认已 export |
+| `LLM generation failed` | API key 无效或未设置 | `echo $DEEPSEEK_API_KEY` 确认已 export |
 | demo 启动后无响应 | provider/resolve 死锁（已修复） | 更新至最新 commit |
 
 ## 设计文档

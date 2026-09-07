@@ -24,8 +24,9 @@ namespace pdk_chat_demo {
 // 合法节点类型白名单
 // ============================================================
 static const std::set<std::string> VALID_NODE_TYPES = {
-    "start", "end", "call_tool", "llm_generate", "condition",
-    "fork", "join", "assign", "resource"
+    "start", "end", "call_tool", "llm_generate", "llm_call", "dsl_call",
+    "tool_call", "condition", "fork", "join", "assign", "resource",
+    "generate_subgraph", "assert", "yield"
 };
 
 // ============================================================
