@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-09-07
+goal: Eliminate stdin race between main loop and ChatSession input thread;
+  complete the producer-consumer pattern specified in chat-async-io-queue-infra
+  but never shipped.
