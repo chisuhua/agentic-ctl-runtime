@@ -1,6 +1,9 @@
 ### AgenticDSL `/main`
 ```yaml
 # --- BEGIN AgenticDSL ---
+name: fork-join-loop
+version: "0.1.0"
+agent_loop: fork_join
 graph_type: subgraph
 nodes:
   - id: start

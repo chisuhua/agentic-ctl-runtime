@@ -1,6 +1,9 @@
 ### AgenticDSL `/main`
 ```yaml
 # --- BEGIN AgenticDSL ---
+name: plan-execute-loop
+version: "0.1.0"
+agent_loop: plan_execute
 graph_type: subgraph
 nodes:
   - id: start

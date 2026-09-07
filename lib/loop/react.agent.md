@@ -1,6 +1,9 @@
 ### AgenticDSL `/main`
 ```yaml
 # --- BEGIN AgenticDSL ---
+name: react-loop
+version: "0.1.0"
+agent_loop: react
 graph_type: subgraph
 nodes:
   - id: start
