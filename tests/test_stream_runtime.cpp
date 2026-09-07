@@ -49,7 +49,9 @@ ToolRegistry make_registry_with_echo() {
   ToolRegistry registry;
   registry.register_tool("echo", make_meta("echo"),
       [](const nlohmann::json& args) -> nlohmann::json {
-        return nlohmann::json{{"ok", true}, {"result", args.value("text", "")}};
+        // 返回纯字符串 (不包裹 {"ok":...}) — 避免 dispatch_to_tool 走 ToolResult::from_json
+        // 分支 (该分支只提取 "data" 子字段, 字符串结果会丢失文本)
+        return nlohmann::json(args.value("text", ""));
       });
   return registry;
 }
@@ -320,9 +322,9 @@ TEST_CASE("NodeExecutor: set_stream_sink default null", "[stream][runtime][categ
   node.metadata["stream"] = true;
 
   Context ctx;
-  // 无 sink → 不崩溃, 同步执行
-  REQUIRE_NOTHROW(executor.execute_node(&node, ctx));
-  REQUIRE(ctx.contains("result"));
+  // execute_node 返回新 Context (ctx 不修改), 需捕获返回值
+  Context result = executor.execute_node(&node, ctx);
+  REQUIRE(result.contains("result"));
 }
 
 TEST_CASE("NodeExecutor: tool_call stream:true slices ToolResult to sink", "[stream][runtime][category-d]") {
@@ -427,8 +429,9 @@ TEST_CASE("stop_token: cancel observes in next within 100ms", "[stream][runtime]
   // handle 保持 active (未 close), consumer 稍后拉取
 
   std::stop_source src;
+  src.request_stop();  // 触发取消: 必须在 next() 前调用, 否则 token 未停止
   auto t0 = std::chrono::steady_clock::now();
-  auto chunk = handle.next(src.get_token());  // token 已停止
+  auto chunk = handle.next(src.get_token());
   auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - t0).count();
 

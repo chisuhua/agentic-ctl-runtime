@@ -139,6 +139,12 @@ function(add_catch_test TEST_NAME)
     # test_cloud_llm_live 需真实 API key，标记为 live 标签，CI 默认不跑
     if(TEST_NAME STREQUAL "test_cloud_llm_live")
         set_tests_properties(${TEST_NAME} PROPERTIES LABELS "live")
+        # 当 AGENTICDSL_ENABLE_LIVE_TESTS=ON 时，启用真实 API 调用测试
+        # 默认 OFF → 编译 disabled 占位 case (no-op)，保证文件仍被识别为有效 Catch2 测试源
+        if(AGENTICDSL_ENABLE_LIVE_TESTS)
+            target_compile_definitions(${TEST_NAME} PRIVATE AGENTICDSL_ENABLE_LIVE_TESTS)
+            message(STATUS "[live-tests] ${TEST_NAME} enabled — will hit real LLM APIs")
+        endif()
     endif()
 
     # test_async_bridge 仅链接 Taskflow (C2 Day 1-2 移除 async_simple, ADR-0030 V2 决策)

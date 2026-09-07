@@ -49,11 +49,24 @@ TEST_CASE("InMemoryBus soak — 10000 events no loss", "[busevent][soak]") {
     REQUIRE(received.load() == N);
 }
 
-TEST_CASE("InMemoryBus try_pop returns BusEvent", "[busevent]") {
+// try_pop 契约: 空队列返回 false (emit + try_pop 与 dispatch_loop 线程竞争, 改用 subscribe 路径取件)
+TEST_CASE("InMemoryBus try_pop returns false on empty queue", "[busevent]") {
     agenticdsl::InMemoryBus bus;
+    agenticdsl::BusEvent out;
+    REQUIRE_FALSE(bus.try_pop(out));
+}
+
+TEST_CASE("InMemoryBus subscribe receives emitted event", "[busevent]") {
+    agenticdsl::InMemoryBus bus;
+    std::atomic<int> count{0};
+    std::string captured_topic;
+    bus.subscribe("pop_test", [&](const agenticdsl::BusEvent& e) {
+        ++count;
+        captured_topic = e.topic;
+    });
     agenticdsl::ToolResult tr;
     bus.emit(agenticdsl::BusEvent{"pop_test", tr});
-    agenticdsl::BusEvent out;
-    REQUIRE(bus.try_pop(out));
-    REQUIRE(out.topic == "pop_test");
+    bus.wait_for_drain();
+    REQUIRE(count.load() == 1);
+    REQUIRE(captured_topic == "pop_test");
 }

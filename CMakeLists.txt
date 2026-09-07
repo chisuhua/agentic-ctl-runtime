@@ -4,6 +4,11 @@ project(AgenticDSL LANGUAGES CXX)
 option(AGENTICDSL_BUILD_TESTS "Build unit tests" OFF)
 option(AGENTICDSL_BUILD_EXAMPLES "Build example programs (agent_basic / agent_simple / agent_loop / slice_01 / phase1_*)" OFF)
 
+# 启用需要真实 API key 的 live 测试（默认 OFF，避免 CI/开发环境无密钥时误跑）
+# 启用方式: cmake -DAGENTICDSL_ENABLE_LIVE_TESTS=ON
+# 安全约束: 严禁提交真实 API key；真实请求会消耗 token 与额度
+option(AGENTICDSL_ENABLE_LIVE_TESTS "Enable live tests that hit real LLM APIs (require API keys)" OFF)
+
 # A 阶段：ThreadSanitizer 选项（验证 InMemoryBus 多线程安全）
 option(AGENTICDSL_ENABLE_TSAN "Enable ThreadSanitizer (InMemoryBus verification)" OFF)
 if(AGENTICDSL_ENABLE_TSAN)
