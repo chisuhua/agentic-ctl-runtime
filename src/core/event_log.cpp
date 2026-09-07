@@ -233,16 +233,16 @@ std::vector<BusEvent> EventLogWriter::read(
       BusEvent e;
       e.topic = j.value("topic", std::string{});
       e.causal_time = j.value("causal_time", uint64_t{0});
-      if (j.contains("payload") && j["payload"].is_object()) {
-        e.payload.data = j["payload"];
-        if (j["payload"].contains("_error_code")) {
-          e.payload.error_code = static_cast<ErrorCode>(
-              j["payload"].value("_error_code", 0));
+      auto payload_it = j.find("payload");
+      if (payload_it != j.end() && payload_it->is_object()) {
+        e.payload.data = *payload_it;
+        auto ec_it = payload_it->find("_error_code");
+        if (ec_it != payload_it->end()) {
+          e.payload.error_code = static_cast<ErrorCode>(ec_it->get<int>());
         }
       }
       out.push_back(std::move(e));
     } catch (const nlohmann::json::exception&) {
-      // 行帧 JSONL: 损坏行跳过, 不破坏文件完整性 (P5 fsync 决策对齐)
       continue;
     }
   }
@@ -274,6 +274,19 @@ bool topic_matches_glob(const std::string& topic, const std::string& glob) {
   return topic.substr(0, pos) == glob.substr(0, pos);
 }
 
+// 提前筛选: 在 JSON parse 之前做 substring 检查, 跳过明显不匹配的行
+// JSONL 格式: ...,"topic":"<name>",... ; 通过 find("\"topic\":\"<prefix>") 排除
+// 仅在 glob 简单前缀场景下有效; glob 为 "*" 或空时返回 true (无条件 parse)
+bool line_topic_quick_match(const std::string& line, const std::string& glob) {
+  if (glob.empty() || glob == "*") return true;
+  auto pos = glob.find('*');
+  if (pos == 0) return true;  // "*" 或 "*.suffix" 匹配所有 topic
+  // 前缀匹配: 检查 line 是否包含 "\"topic\":\"<prefix>"
+  std::string needle = "\"topic\":\"";
+  needle += glob.substr(0, pos);
+  return line.find(needle) != std::string::npos;
+}
+
 }  // namespace
 
 std::vector<BusEvent> EventLogWriter::query(
@@ -281,17 +294,40 @@ std::vector<BusEvent> EventLogWriter::query(
     const QueryFilter& filter,
     size_t max_count) const {
   std::vector<BusEvent> out;
-  auto all = read(agent_id, config_.event_log_dir);
-  out.reserve(std::min(all.size(), max_count));
-  for (auto& e : all) {
-    if (filter.has_time_window &&
-        (e.causal_time < filter.start_causal_time ||
-         e.causal_time > filter.end_causal_time)) {
+  out.reserve(std::min(max_count, size_t{1024}));
+  auto path = config_.event_log_dir / (agent_id + ".v1.jsonl");
+  std::ifstream in(path);
+  if (!in.is_open()) return out;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty()) continue;
+    if (!line_topic_quick_match(line, filter.topic_glob)) continue;
+    try {
+      auto j = nlohmann::json::parse(line);
+      if (j.value("v", 0) != 1) continue;
+      auto topic = j.value("topic", std::string{});
+      if (!topic_matches_glob(topic, filter.topic_glob)) continue;
+      auto ct = j.value("causal_time", uint64_t{0});
+      if (filter.has_time_window &&
+          (ct < filter.start_causal_time || ct > filter.end_causal_time)) {
+        continue;
+      }
+      BusEvent e;
+      e.topic = std::move(topic);
+      e.causal_time = ct;
+      auto payload_it = j.find("payload");
+      if (payload_it != j.end() && payload_it->is_object()) {
+        e.payload.data = *payload_it;
+        auto ec_it = payload_it->find("_error_code");
+        if (ec_it != payload_it->end()) {
+          e.payload.error_code = static_cast<ErrorCode>(ec_it->get<int>());
+        }
+      }
+      out.push_back(std::move(e));
+      if (out.size() >= max_count) break;
+    } catch (const nlohmann::json::exception&) {
       continue;
     }
-    if (!topic_matches_glob(e.topic, filter.topic_glob)) continue;
-    out.push_back(std::move(e));
-    if (out.size() >= max_count) break;
   }
   return out;
 }

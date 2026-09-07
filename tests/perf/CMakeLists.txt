@@ -25,6 +25,8 @@ target_link_libraries(test_event_log_query_perf PRIVATE
 
 target_compile_definitions(test_event_log_query_perf PRIVATE
     CATCH_CONFIG_ENABLE_ALL_STRINGMAKERS=1
+    $<$<CONFIG:Release>:HYDRAFORGE_PERF_STRICT>
+    $<$<CONFIG:RelWithDebInfo>:HYDRAFORGE_PERF_STRICT>
 )
 
 add_test(
