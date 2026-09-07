@@ -15,6 +15,7 @@
 #include <mutex>
 #include <set>
 #include <queue>
+#include <string_view>
 #include <variant>
 
 namespace agenticdsl {
@@ -308,10 +309,8 @@ ExecutionResult TopoScheduler::execute_dag_loop(DagState& state, const Context& 
 
 
 void TopoScheduler::append_dynamic_graphs(std::vector<ParsedGraph> new_graphs) {
-    // Store the new graphs temporarily
-    // In a more complex system, this might trigger an event or flag for the main loop
     dynamic_graphs_.insert(dynamic_graphs_.end(), std::make_move_iterator(new_graphs.begin()), std::make_move_iterator(new_graphs.end()));
-    // The main execute loop will check this list and rebuild the DAG if necessary.
+    // 主 execute 循环会检查此列表并在需要时重建 DAG (rebuild_dynamic_graph)
 }
 
 void TopoScheduler::start_fork_simulation(const ForkNode* fork_node, const Context& fork_context_snapshot) {
@@ -338,18 +337,14 @@ void TopoScheduler::execute_fork_branches() {
         const NodePath& branch_path = current_fork_branches_[current_fork_branch_index_];
         LOG_DEBUG("Executing fork branch: " << branch_path);
 
-        // 1. Restore snapshot for this branch
         Context branch_initial_ctx = *fork_snapshot; // Copy the snapshot
 
         try {
-            // 2. Execute the branch subgraph
             Context branch_final_ctx = execute_single_branch(branch_path, branch_initial_ctx);
-
-            // 3. Store result
             current_fork_branch_results_.push_back(std::move(branch_final_ctx));
             current_fork_branch_index_++;
         } catch (const HardEndException& e) {
-            // Re-throw to be caught in the main execute loop
+            // 硬终点: 向主执行循环传播终止
             throw;
         }
 
@@ -537,9 +532,9 @@ TopoScheduler::dispatch_ready_nodes(DagState& state, const Context& context) {
     (void)state; // Sprint 7 Day 6: state 参数预留, Day 7-8 实施真实纯函数化迁移到 state.*
     // 注意: fork 分支处理已在 execute() L161-167 完成 (主 while 循环每次迭代开始时调用)。
     // 此函数仅负责派发 ready_queue 中的下一个节点, 不重复处理 fork 状态。
-    // Sprint 7 Day 1: 去除与 execute() 重复的 fork 处理块 (Oracle ses_112a9f9c5ffesqpYeefOBgMkjH 决议)
 
-    if (!ready_queue_.empty() && !is_executing_fork_branches_) {
+    auto pop_ready_node = [&context, this]() -> std::variant<std::monostate, NodeLookupResult, ExecutionResult> {
+        if (ready_queue_.empty()) return std::monostate{};
         NodePath current_path = ready_queue_.front();
         ready_queue_.pop();
         auto node_it = node_map_.find(current_path);
@@ -547,21 +542,18 @@ TopoScheduler::dispatch_ready_nodes(DagState& state, const Context& context) {
             return ExecutionResult{false, "Node not found in map: " + current_path, context, std::nullopt};
         }
         return NodeLookupResult{current_path, node_it->second};
+    };
+
+    if (!ready_queue_.empty() && !is_executing_fork_branches_) {
+        return pop_ready_node();
     }
 
     if (!ready_queue_.empty() && is_executing_fork_branches_ &&
         current_fork_branch_index_ == current_fork_branches_.size()) {
         std::unordered_set<NodePath> dummy_executed;
         session_.check_and_requeue_dynamic_deps(dummy_executed);
-        if (!ready_queue_.empty()) {
-            NodePath current_path = ready_queue_.front();
-            ready_queue_.pop();
-            auto node_it = node_map_.find(current_path);
-            if (node_it == node_map_.end()) {
-                return ExecutionResult{false, "Node not found in map: " + current_path, context, std::nullopt};
-            }
-            return NodeLookupResult{current_path, node_it->second};
-        }
+        auto result = pop_ready_node();
+        if (!std::holds_alternative<std::monostate>(result)) return result;
     }
 
     if (!session_.get_pending_dynamic_deps().empty()) {
@@ -699,20 +691,16 @@ bool TopoScheduler::check_end_termination(Node* current_node, const NodePath& cu
 std::optional<ExecutionResult> TopoScheduler::handle_node_completion(
     DagState& state, const NodeResult& result, Node* current_node, const NodePath& current_path) {
     (void)state;
-    if (!result.success) {
-        for (const auto& dependent : wait_for_dependents_[current_path]) {
-            (void)dependent;
-        }
-    }
+    (void)result; // 失败路径由调用方处理, 此处仅做后继调度
     update_successors(current_node, current_path);
     return std::nullopt;
 }
 
 bool TopoScheduler::process_jump(const std::string& message, const NodePath& current_path) {
-    if (message.find("Jumping to:") == std::string::npos) return false;
-    size_t pos = message.find("Jumping to:");
+    static constexpr std::string_view kJumpMarker = "Jumping to:";
+    size_t pos = message.find(kJumpMarker);
     if (pos == std::string::npos) return false;
-    NodePath target = message.substr(pos + 12);
+    NodePath target = message.substr(pos + kJumpMarker.size());
     LOG_DEBUG("Node " << current_path << " failed assert, jumping to " << target);
     std::queue<NodePath> empty_queue;
     ready_queue_.swap(empty_queue);
