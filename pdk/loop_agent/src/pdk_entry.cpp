@@ -340,8 +340,19 @@ extern "C" void pdk_register_tools(::agenticdsl::IToolRegistry& registry) {
                 nlohmann::json output;
                 output["success"] = result.success;
                 output["error"]   = result.success ? "" : result.message;
-                output["response"] = result.final_context.value("response",
-                    result.final_context.value("output", result.message));
+                std::string response_text;
+                for (const char* k : {"response", "output",
+                                      "llm_response", "plan_response",
+                                      "final_result"}) {
+                    auto v = result.final_context.find(k);
+                    if (v != result.final_context.end() && v->is_string() &&
+                        !v->get<std::string>().empty()) {
+                        response_text = v->get<std::string>();
+                        break;
+                    }
+                }
+                if (response_text.empty()) response_text = result.message;
+                output["response"] = response_text;
                 output["steps"]  = 1;
                 output["tokens_used"] = 0;
                 output["cost_usd"]    = 0.0;
