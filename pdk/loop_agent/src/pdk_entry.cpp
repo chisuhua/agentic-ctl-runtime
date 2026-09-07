@@ -23,49 +23,10 @@
 #include <agenticdsl/types/layered_context.h>
 #include <core/engine.h>
 
-// CancellationRegistry — maps cancellation_id to stop_source for cross-thread cancellation
-// Phase B Step 3: chat-async-io-cancellation-chain
-class CancellationRegistry {
- public:
-  std::string register_source(std::shared_ptr<std::stop_source> source) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto now = std::chrono::steady_clock::now();
-    auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()).count();
-    std::string id = std::to_string(timestamp_ms) + "_" +
-                     std::to_string(counter_.fetch_add(1));
-    sources_[id] = std::move(source);
-    return id;
-  }
-
-  std::stop_token resolve_token(const std::string& id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = sources_.find(id);
-    if (it == sources_.end()) {
-      return std::stop_token{};
-    }
-    return it->second->get_token();
-  }
-
-  std::shared_ptr<std::stop_source> resolve_source(const std::string& id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = sources_.find(id);
-    if (it == sources_.end()) {
-      return nullptr;
-    }
-    return it->second;
-  }
-
-  void unregister(const std::string& id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    sources_.erase(id);
-  }
-
- private:
-  std::mutex mutex_;
-  std::unordered_map<std::string, std::shared_ptr<std::stop_source>> sources_;
-  std::atomic<uint64_t> counter_{0};
-};
+// §4.0.4 chat-async-io-consumer-loop: use SHARED CancellationRegistry from pdk_chat_demo
+// (was: file-static g_loop_registry; now: g_cancellation_registry global, same identity as ChatSession)
+#include "cancellation_registry.h"
+#include "commands/cancellation_globals.h"
 
 namespace fs = std::filesystem;
 
@@ -144,8 +105,8 @@ std::string load_agent_file(const std::string& loop_type) {
 // nullptr = not set, mock fallback path.
 static thread_local ::agenticdsl::ILLMProvider* tls_parent_provider = nullptr;
 
-// Phase B Step 3: CancellationRegistry for stop_token propagation across loop_agent entry
-static CancellationRegistry g_loop_registry;
+// §4.0.4 chat-async-io-consumer-loop: REMOVED file-static g_loop_registry
+// Now uses pdk_chat_demo::g_cancellation_registry (same identity as ChatSession)
 
 // --- pdk_plugin_info ---
 extern "C" const hydraforge::PluginInfo pdk_plugin_info = {
@@ -239,11 +200,13 @@ extern "C" void pdk_register_tools(::agenticdsl::IToolRegistry& registry) {
             }
             std::string session_id = str_arg(args, "session_id");
 
-            // Phase B Step 3: 解析 cancellation_id 并解析为 stop_token
+            // §4.0.10 chat-async-io-consumer-loop: resolve from shared g_cancellation_registry
+            // Null-guard: nullptr global → non-cancellable-but-executable (no error, no crash)
             std::string cancellation_id = str_arg(args, "cancellation_id");
             std::stop_token cancellation_token;
-            if (!cancellation_id.empty()) {
-                cancellation_token = g_loop_registry.resolve_token(cancellation_id);
+            if (!cancellation_id.empty() && pdk_chat_demo::g_cancellation_registry) {
+                cancellation_token =
+                    pdk_chat_demo::g_cancellation_registry->resolve_token(cancellation_id);
             }
 
             // Mock fallback when parent provider not set (Q3/Q7)

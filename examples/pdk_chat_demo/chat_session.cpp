@@ -193,7 +193,7 @@ public:
     // Cancellation state (Phase B: chat-async-io-cancellation-chain)
     std::shared_ptr<CancellationRegistry> cancellation_registry_;
     std::string current_cancellation_id_;
-    std::stop_token current_token_;  // Store the token directly
+    std::stop_token current_token_;
 
     // Wave 3-A Phase C: pending model switch target (next turn will swap to this)
     std::string next_model_;
@@ -206,6 +206,14 @@ public:
     mutable std::mutex follow_up_mutex_;
     size_t capacity_ = kDefaultQueueCapacity;
 
+    // chat-async-io-consumer-loop §1.5: condition variable + atomic counter for blocking pop
+    std::condition_variable input_cv_;
+    std::mutex input_cv_mutex_;
+    std::atomic<size_t> pending_input_count_{0};
+
+    // chat-async-io-consumer-loop §5.3: stop_poll_ flag for interrupt_thread RAII GuardChatScope
+    std::atomic<bool> stop_poll_{false};
+
     // Input thread (async producer)
     std::thread input_thread_;
     std::atomic<bool> stop_input_thread_{false};
@@ -215,11 +223,13 @@ public:
         std::shared_ptr<agenticdsl::IInteractionBus> b,
         agenticdsl::IToolRegistry* r,
         const AgentConfig& a,
-        const SessionConfig& s
+        const SessionConfig& s,
+        std::shared_ptr<CancellationRegistry> registry_arg
     ) : engine(e), bus(std::move(b)), registry(r), agent_cfg(a), session_cfg(s),
         provider_mode(a.provider),
         persist_dir_expanded(expand_home(s.persist_dir)),
-        cancellation_registry_(std::make_shared<CancellationRegistry>()) {
+        // §4.0.2/§4.0.9 NC3: shared registry if provided, else fallback self-owned
+        cancellation_registry_(registry_arg ? registry_arg : std::make_shared<CancellationRegistry>()) {
         if (!persist_dir_expanded.empty()) {
             ensure_dir_0700(persist_dir_expanded);
         }
@@ -230,6 +240,8 @@ public:
 
     ~Impl() {
         stop_input_thread_.store(true);
+        // §2.3/§3.4: notify cv so any blocked pop_next_input wakes and returns nullopt
+        input_cv_.notify_all();
         if (input_thread_.joinable()) {
             input_thread_.join();
         }
@@ -246,8 +258,9 @@ ChatSession::ChatSession(
     std::shared_ptr<agenticdsl::IInteractionBus> bus,
     agenticdsl::IToolRegistry* registry,
     const AgentConfig& agent_cfg,
-    const SessionConfig& session_cfg
-) : impl_(std::make_unique<Impl>(engine, std::move(bus), registry, agent_cfg, session_cfg)) {
+    const SessionConfig& session_cfg,
+    std::shared_ptr<CancellationRegistry> registry_arg
+) : impl_(std::make_unique<Impl>(engine, std::move(bus), registry, agent_cfg, session_cfg, registry_arg)) {
     // 生成 session ID (UUID 简化版)
     std::random_device rd;
     std::mt19937_64 gen(rd());
@@ -272,6 +285,8 @@ void ChatSession::request_stop() {
   auto source = impl_->cancellation_registry_->resolve_source(
       impl_->current_cancellation_id_);
   if (source) source->request_stop();
+  // §2.3: wake any blocked pop_next_input (cheap, idempotent)
+  impl_->input_cv_.notify_all();
 }
 
 bool ChatSession::request_model_switch(const std::string& provider_name) {
@@ -298,11 +313,12 @@ ChatResult ChatSession::chat(const std::string& user_input) {
 ChatResult ChatSession::chat(const std::string& user_input, std::stop_token token) {
     ChatResult result;
 
+    // §4.0.5: ALWAYS build stop_source + register, regardless of token.stop_possible()
     std::string cancellation_id;
+    auto source = std::make_shared<std::stop_source>();
+    cancellation_id = impl_->cancellation_registry_->register_source(source);
+    impl_->current_cancellation_id_ = cancellation_id;
     if (token.stop_possible()) {
-        auto source = std::make_shared<std::stop_source>();
-        cancellation_id = impl_->cancellation_registry_->register_source(source);
-        impl_->current_cancellation_id_ = cancellation_id;
         impl_->current_token_ = token;
     }
 
@@ -602,6 +618,9 @@ bool ChatSession::try_push_steering_for_test(const std::string& msg) {
         return false;
     }
     impl_->steering_queue_.push(msg);
+    // §2.5 NC2 fix: increment count atomically so pop_next_input predicate wakes
+    impl_->pending_input_count_.fetch_add(1, std::memory_order_release);
+    impl_->input_cv_.notify_one();
     return true;
 }
 
@@ -612,6 +631,9 @@ bool ChatSession::try_push_follow_up_for_test(const std::string& msg) {
         return false;
     }
     impl_->follow_up_queue_.push(msg);
+    // §2.6 NC2 fix: increment count atomically so pop_next_input predicate wakes
+    impl_->pending_input_count_.fetch_add(1, std::memory_order_release);
+    impl_->input_cv_.notify_one();
     return true;
 }
 
@@ -621,14 +643,80 @@ size_t ChatSession::try_clear_queue(QueueKind kind) {
     auto& q = (kind == QueueKind::Steering ? impl_->steering_queue_ : impl_->follow_up_queue_);
     size_t count = q.size();
     while (!q.empty()) q.pop();
+    // §2.7 NC2 fix: fetch_sub(N) — preserves count invariant for the other queue
+    impl_->pending_input_count_.fetch_sub(count, std::memory_order_acq_rel);
     return count;
+}
+
+std::optional<InputMessage> ChatSession::try_pop_input() {
+    // §2.1 priority: steering before follow-up
+    {
+        std::lock_guard<std::mutex> lock(impl_->steering_mutex_);
+        if (!impl_->steering_queue_.empty()) {
+            InputMessage msg{QueueKind::Steering, impl_->steering_queue_.front()};
+            impl_->steering_queue_.pop();
+            impl_->pending_input_count_.fetch_sub(1, std::memory_order_acq_rel);
+            return msg;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(impl_->follow_up_mutex_);
+        if (!impl_->follow_up_queue_.empty()) {
+            InputMessage msg{QueueKind::FollowUp, impl_->follow_up_queue_.front()};
+            impl_->follow_up_queue_.pop();
+            impl_->pending_input_count_.fetch_sub(1, std::memory_order_acq_rel);
+            return msg;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<InputMessage> ChatSession::pop_next_input(std::chrono::milliseconds timeout) {
+    // §2.2 fast-path: skip wait if already pending (avoids spurious wakeup overhead)
+    if (impl_->pending_input_count_.load(std::memory_order_acquire) > 0) {
+        if (auto msg = try_pop_input()) {
+            return msg;
+        }
+    }
+    std::unique_lock<std::mutex> lock(impl_->input_cv_mutex_);
+    // §2.2/§2.4 predicate uses stop_input_thread_ as shutdown signal + count, NOT queue.empty()
+    bool woken = impl_->input_cv_.wait_for(lock, timeout, [this]() {
+        return impl_->stop_input_thread_.load(std::memory_order_acquire) ||
+               impl_->pending_input_count_.load(std::memory_order_acquire) > 0;
+    });
+    if (!woken) return std::nullopt;  // timeout
+    if (impl_->stop_input_thread_.load(std::memory_order_acquire) &&
+        impl_->pending_input_count_.load(std::memory_order_acquire) == 0) {
+        return std::nullopt;  // shutdown with empty queues
+    }
+    return try_pop_input();
+}
+
+std::optional<InputMessage> ChatSession::try_peek_input() const {
+    // §2.8 NH1 fix: peek only, never consume, never modify count
+    {
+        std::lock_guard<std::mutex> lock(impl_->steering_mutex_);
+        if (!impl_->steering_queue_.empty()) {
+            return InputMessage{QueueKind::Steering, impl_->steering_queue_.front()};
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(impl_->follow_up_mutex_);
+        if (!impl_->follow_up_queue_.empty()) {
+            return InputMessage{QueueKind::FollowUp, impl_->follow_up_queue_.front()};
+        }
+    }
+    return std::nullopt;
 }
 
 void ChatSession::Impl::input_thread_main() {
     std::string line;
-    while (!stop_input_thread_.load()) {
+    while (!stop_input_thread_.load(std::memory_order_acquire)) {
         if (!std::getline(std::cin, line)) {
-            break;  // EOF
+            // §3.4 NH2 fix: EOF must signal shutdown AND wake any blocked pop_next_input
+            stop_input_thread_.store(true, std::memory_order_release);
+            input_cv_.notify_all();
+            break;
         }
         if (line.empty()) continue;
 
@@ -636,17 +724,25 @@ void ChatSession::Impl::input_thread_main() {
             std::lock_guard<std::mutex> lock(steering_mutex_);
             if (steering_queue_.size() < capacity_) {
                 steering_queue_.push(line);
+                // §3.1 push + count + notify in same mutex scope (C3 ordering fix)
+                pending_input_count_.fetch_add(1, std::memory_order_release);
             } else {
+                // §3.3 overflow: do NOT increment count, do NOT notify (no spurious wakeup)
                 std::cerr << "[chat] steering queue overflow, rejected length=" << line.size() << std::endl;
+                continue;
             }
         } else {
             std::lock_guard<std::mutex> lock(follow_up_mutex_);
             if (follow_up_queue_.size() < capacity_) {
                 follow_up_queue_.push(line);
+                pending_input_count_.fetch_add(1, std::memory_order_release);
             } else {
                 std::cerr << "[chat] follow_up queue overflow, rejected length=" << line.size() << std::endl;
+                continue;
             }
         }
+        // §3.1/§3.2 notify OUTSIDE mutex (avoids holding mutex during wake; reduces contention)
+        input_cv_.notify_one();
     }
 }
 

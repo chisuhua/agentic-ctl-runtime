@@ -6,7 +6,11 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 #include <stop_token>
@@ -39,7 +43,7 @@ struct SessionConfig {
     std::string persist_dir = "~/.hydraforge/sessions/";
     int compact_threshold_tokens = 8000;
     bool branch_on_user_request = true;
-    bool enable_input_thread = false;
+    bool enable_input_thread = true;  // single-reader mode (chat-async-io-consumer-loop)
 };
 
 struct PluginConfig {
@@ -99,6 +103,12 @@ struct ChatResult {
 // QueueKind 标识 steering vs follow-up 队列
 enum class QueueKind { Steering, FollowUp };
 
+// InputMessage: 从队列取出的消息包装 (chat-async-io-consumer-loop §1.1)
+struct InputMessage {
+    QueueKind kind;
+    std::string text;
+};
+
 class ChatSession {
 public:
     ChatSession(
@@ -106,7 +116,8 @@ public:
         std::shared_ptr<agenticdsl::IInteractionBus> bus,
         agenticdsl::IToolRegistry* registry,
         const AgentConfig& agent_cfg,
-        const SessionConfig& session_cfg
+        const SessionConfig& session_cfg,
+        std::shared_ptr<CancellationRegistry> registry_arg = nullptr  // §4.0.2/§4.0.9 shared registry (NC3 default)
     );
 
     ~ChatSession();
@@ -139,6 +150,17 @@ public:
     // Test-only injection helpers (production code uses input thread)
     bool try_push_steering_for_test(const std::string& msg);
     bool try_push_follow_up_for_test(const std::string& msg);
+
+    // === chat-async-io-consumer-loop §1.x consumer API ===
+    // try_pop_input: non-blocking priority pop (steering > follow-up); returns nullopt if both empty
+    std::optional<InputMessage> try_pop_input();
+
+    // pop_next_input: blocking pop with timeout; returns nullopt on timeout or shutdown
+    std::optional<InputMessage> pop_next_input(std::chrono::milliseconds timeout);
+
+    // try_peek_input: non-blocking peek at front (steering > follow-up); does NOT consume
+    // (§NH1 fix: used by interrupt_thread to poll /cancel without losing the message)
+    std::optional<InputMessage> try_peek_input() const;
 
     // === T1: Session 持久化 (design.md §Session 持久化) ===
     // 从磁盘加载 session (persist_dir/<id>.json)

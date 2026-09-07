@@ -49,6 +49,8 @@
 #include "commands/tree_command.h"
 #include "commands/fork_command.h"
 #include "commands/clone_command.h"
+#include "commands/cancel_command.h"
+#include "commands/cancellation_globals.h"
 #include "tools/provider_switch_stub.h"
 #include "tools/session_fork.h"
 #include "tools/session_clone.h"
@@ -438,14 +440,19 @@ int main(int argc, char* argv[]) {
 
     // ============================================================
     // 7. ChatSession 初始化（使用 engine 内部 registry）
+    // §4.0.3 + §7.1: enable_input_thread 永远为 true（single-reader 模式）
+    //                 撤销 c30b2b3 的 isatty 守卫 — race 已通过 single-reader 消除
+    // §4.0.3: 设 g_cancellation_registry (shared with loop_agent)
     // ============================================================
-    config.session.enable_input_thread = isatty(STDIN_FILENO) != 0;
+    config.session.enable_input_thread = true;
+    pdk_chat_demo::g_cancellation_registry = std::make_shared<CancellationRegistry>();
     // T1.9: 启动时清理 >24h 的 stale session 文件
     pdk_chat_demo::ChatSession::cleanup_stale(config.session.persist_dir);
 
     pdk_chat_demo::ChatSession session(
         engine.get(), bus, &engine->get_tool_registry(),
-        config.agent, config.session
+        config.agent, config.session,
+        pdk_chat_demo::g_cancellation_registry  // §4.0.3 shared registry
     );
 
     // T1.4: --session <id> 从磁盘恢复
@@ -521,6 +528,7 @@ int main(int argc, char* argv[]) {
     command_registry.register_command(pdk_chat_demo::make_tree_command_spec());
     command_registry.register_command(pdk_chat_demo::make_fork_command_spec());
     command_registry.register_command(pdk_chat_demo::make_clone_command_spec());
+    command_registry.register_command(pdk_chat_demo::make_cancel_command_spec());  // §7.7
 
     // ============================================================
     // 7.9. 验证 --fork node_id 是否存在于已加载 session
@@ -539,30 +547,32 @@ int main(int argc, char* argv[]) {
 
     // ============================================================
     // 8. 信号处理 + 交互循环
+    // §7.3: 用 pop_next_input (single-reader 模式) 替代 std::getline
+    //        main loop 只从 queue 消费，input thread 是 stdin 唯一 reader
     // ============================================================
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    std::string input;
-    while (std::getline(std::cin, input)) {
-        // 优先检查 shutdown flag —— signal_handler 仅置位，实际清理在 main 线程执行。
+    while (auto msg = session.pop_next_input(std::chrono::milliseconds(500))) {
+        // §7.4: timeout → continue to re-check shutdown flag
+        // shutdown (nullopt on EOF) → break
         if (g_shutdown_requested.load(std::memory_order_acquire)) {
             break;
         }
-        if (!input.empty() && input.front() == '/') {
+        const std::string& input = msg->text;
+
+        // §7.5.1: Steering → command path (e.g. /cancel, /help, /model)
+        if (msg->kind == pdk_chat_demo::QueueKind::Steering) {
             if (input == pdk_chat_demo::kExitCommand ||
                 input.rfind(std::string(pdk_chat_demo::kExitCommand) + " ", 0) == 0) {
                 break;
             }
             auto spec = command_registry.resolve_command(input);
             if (spec) {
-                hydraforge::pdk::CommandContext ctx;
-                ctx.user_input = input;
-                ctx.tool_coordinator = coord_ptr;
-                pdk_chat_demo::g_current_command_input = input;
                 std::string output;
                 try {
-                    output = spec->handler(ctx.tool_ctx);
+                    agenticdsl::ToolCallContext tool_ctx;
+                    output = spec->handler(tool_ctx);
                 } catch (const std::exception& e) {
                     output = std::string("[command error] ") + e.what();
                 }
@@ -582,14 +592,10 @@ int main(int argc, char* argv[]) {
             std::cout << std::endl << "User> " << std::flush;
             continue;
         }
-        if (input.empty()) {
-            std::cout << std::endl << "User> " << std::flush;
-            continue;
-        }
 
+        // §7.5.2: FollowUp → chat(input)
         auto result = session.chat(input);
 
-        // T1 线程安全: 检查 budget alert atomic flag (dispatch 线程置位)
         if (session.consume_budget_alert()) {
             std::cerr << std::endl << "[⚠ Budget exceeded] cost limit reached" << std::endl;
         }
