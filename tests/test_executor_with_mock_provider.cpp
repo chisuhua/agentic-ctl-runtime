@@ -68,6 +68,12 @@ assign:
 ```
 )";
 
+// fix-generation-request-model-default regression guard for GenerateSubgraphNode:
+// 静态契约脚本 scripts/check-model-default-cleared.sh 覆盖全部 5 站点 (包括 node_executor.cpp:366).
+// Unit-test 路径复杂: 需要构造 GenerateSubgraphNode + 完整 NodeExecutor 依赖 + 模板渲染路径,
+// 投入产出比低于静态脚本. 已在 tests/test_context_compactor.cpp 加 ContextCompactor 的
+// Recording Provider 单测作为 pattern 示范 (Oracle P1-1 风格).
+
 } // namespace
 
 // === 测试 1：DSLEngine 默认使用 MockLLMProvider ===
