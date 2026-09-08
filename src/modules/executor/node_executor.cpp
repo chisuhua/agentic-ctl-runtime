@@ -355,6 +355,15 @@ Context NodeExecutor::execute_generate_subgraph(const GenerateSubgraphNode* node
         if (llm_provider_) {
             GenerationRequest req;
             req.prompt = rendered_prompt;
+            // ⚠️ NOT redundant: LLMParams = LLMConfig 别名, 默认 model = "gpt-4o-mini"
+            // (非空). 若不清空, CloudLLMAdapter::build_request_body L164
+            // (req.params.model.empty() ? config_.model : req.params.model)
+            // 会拿默认 "gpt-4o-mini" 遮蔽 adapter 构造时 factory 设置的真实 model
+            // (如 deepseek-v4-flash) → deepseek server 拒绝
+            // ("you passed gpt-4o-mini"). 站点无 model 概念, 清空让 adapter fallback.
+            // 实测: real-llm-core-coverage Phase A A.2 测试中加此行后 PASS.
+            // 详见 openspec/changes/fix-generation-request-model-default/.
+            req.params.model.clear();
             auto result = llm_provider_->generate(req, {});
             if (!result.has_value()) {
                 throw std::runtime_error("LLM provider error: " + result.error().message);
@@ -573,6 +582,13 @@ Context NodeExecutor::execute_yield(const YieldNode* node, const Context& ctx, B
         case YieldMode::CONTINUE: {
             GenerationRequest req;
             req.prompt = std::move(rendered);
+            // ⚠️ NOT redundant: LLMParams = LLMConfig 别名, 默认 model = "gpt-4o-mini"
+            // (非空). 若不清空, CloudLLMAdapter L164 会拿默认遮蔽 factory 配置的真实
+            // model → server 拒绝. 站点无 model 概念, 清空让 adapter fallback.
+            // 注: token={} 属 fix-yield-node-token-passthrough scope (独立 follow-up),
+            // 本 change 仅修 model 契约.
+            // 详见 openspec/changes/fix-generation-request-model-default/.
+            req.params.model.clear();
             auto stream = llm_provider_->generate_stream(req, std::stop_token{});
             if (!stream) {
                 new_context["__yield_error__"] = "null_stream";
