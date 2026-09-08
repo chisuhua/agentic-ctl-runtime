@@ -7,7 +7,7 @@
 //          修复: 工厂层为 cloud 路径注入 SerializingDecorator,
 //          用 std::mutex + std::condition_variable 串行化 generate/generate_stream
 // 设计依据：openspec/changes/fix-cloud-adapter-multithreading/design.md
-//          ADR-XXXX (Cloud adapter threading model) follow-up
+//          ADR-0087 (Cloud adapter threading model) follow-up
 // 作者：AgenticDSL Wave 1 #2 (post-real-llm-core-coverage Phase B SIGSEGV)
 // 最后修改日期：2026-09-08
 
@@ -38,13 +38,14 @@ namespace agenticdsl {
  * 行为 (mutex + cv 串行化):
  *  - generate(): 等待 cv (concurrent_count_ == 0), 唤醒后调用 inner_,
  *    返回前减并发计数 + notify_all
- *  - generate_stream(): 同 generate() 语义, 串行化获取 inner stream,
- *    流本身不在锁内 (否则会持有锁 10000ms 阻塞后续 waiter)
- *  - stop_token: cv_.wait 谓词包含 token.stop_requested(), 取消时立即返回
- *    LLMError{Code::Cancelled, ...}
+*  - generate_stream(): 同 generate() 语义, 串行化获取 inner stream,
+ *    流本身不持锁 (否则会持有锁 10000ms 阻塞后续 waiter)
+ *  - stop_token: cv_.wait 谓词包含 token.stop_requested(), 取消时:
+ *      - generate()      → 立即返回 LLMError{Code::Cancelled}
+ *      - generate_stream() → 立即返回 nullptr (调用方需检查)
  *
  * ⚠️ NOT redundant: 牺牲并发 LLM 调用换取零 SIGSEGV. 真根因修复 (OpenSSL 3.0
- * + httplib 升级) 见 follow-up ADR-XXXX. 当前实现是规避 (serialization),
+ * + httplib 升级) 见 follow-up ADR-0087. 当前实现是规避 (serialization),
  * 不是根因修复.
  *
  * 线程安全: 全部状态 (concurrent_count_, total_serialize_waiters_, mutex_, cv_)
