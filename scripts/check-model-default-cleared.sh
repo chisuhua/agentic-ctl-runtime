@@ -34,13 +34,16 @@ for arg in "$@"; do
 done
 
 # 5 个 LLMParams 潜伏站点 (oracle ses_f7f5ef175ffeGKhxXLfBJjzLVX 实证)
-# 格式: "file|search_pattern|description"
+# 格式: "file|search_pattern|min_count|anchor_pattern|description"
+#   - search_pattern: 主匹配 (params.model.clear())
+#   - min_count: 该文件内至少出现次数 (防双站点退化: node_executor.cpp 有 2 处 clear)
+#   - anchor_pattern: 站点独有上下文标识 (二次确认, 防同 pattern 错配)
 SITES=(
-  "src/modules/executor/node_executor.cpp|req.params.model.clear()|GenerateSubgraphNode ll_call (was line 356)"
-  "src/modules/executor/node_executor.cpp|req.params.model.clear()|YieldNode generate_stream (was line 574, same file as above)"
-  "src/modules/skill_interpreter/skill_interpreter.cpp|gen_req.params.model.clear()|IPC llm_generate (was line 657-659)"
-  "src/core/context_compactor.cpp|req.params.model.clear()|ContextCompactor::compact summary (was line 60)"
-  "src/modules/cognitive/gepa_loop.cpp|request.params.model.clear()|GEPA reflection (was line 115)"
+  "src/modules/executor/node_executor.cpp|req.params.model.clear()|2|GenerateSubgraphNode|GenerateSubgraphNode ll_call (was line 356) + YieldNode (was line 574, 同文件 2 处)"
+  "src/modules/executor/node_executor.cpp|req.params.model.clear()|2|fix-yield-node-token-passthrough|YieldNode generate_stream 锚点 (二次确认 YieldNode 注释存在, 防 GenerateSubgraphNode 单 clear 误删 YieldNode clear 不被拦截)"
+  "src/modules/skill_interpreter/skill_interpreter.cpp|gen_req.params.model.clear()|1||IPC llm_generate (was line 657-659)"
+  "src/core/context_compactor.cpp|req.params.model.clear()|1||ContextCompactor::compact summary (was line 60)"
+  "src/modules/cognitive/gepa_loop.cpp|request.params.model.clear()|1||GEPA reflection (was line 115)"
 )
 
 RED='\033[0;31m'
@@ -56,7 +59,7 @@ echo "Source: openspec/changes/fix-generation-request-model-default/tasks.md §2
 echo
 
 for i in "${!SITES[@]}"; do
-  IFS='|' read -r file pattern desc <<< "${SITES[$i]}"
+  IFS='|' read -r file pattern min_count anchor desc <<< "${SITES[$i]}"
   site_num=$((i + 1))
   if [[ ! -f "$file" ]]; then
     echo -e "${RED}[$site_num/$total] MISSING FILE: $file${NC}"
@@ -64,16 +67,25 @@ for i in "${!SITES[@]}"; do
     continue
   fi
   count=$(grep -c "$pattern" "$file" 2>/dev/null || echo "0")
-  if [[ "$count" -ge 1 ]]; then
+  if [[ "$count" -ge "$min_count" ]]; then
+    # anchor 二次确认 (空 anchor 跳过)
+    if [[ -n "$anchor" ]]; then
+      if ! grep -q "$anchor" "$file"; then
+        echo -e "${RED}[$site_num/$total] MISSING ANCHOR${NC} $file — $desc"
+        echo "  expected anchor: $anchor (sites in same file share pattern, anchor distinguishes)"
+        missing=$((missing + 1))
+        continue
+      fi
+    fi
     line_no=$(grep -n "$pattern" "$file" | head -1 | cut -d: -f1)
     if [[ "$VERBOSE" == "1" ]]; then
-      echo -e "${GREEN}[$site_num/$total] OK${NC} ($line_no) $file — $desc"
+      echo -e "${GREEN}[$site_num/$total] OK${NC} ($line_no, count=$count, min=$min_count) $file — $desc"
     else
       echo -e "${GREEN}[$site_num/$total] OK${NC} $file:$line_no — $desc"
     fi
   else
     echo -e "${RED}[$site_num/$total] MISSING${NC} $file — $desc"
-    echo "  expected pattern: $pattern"
+    echo "  expected pattern: $pattern (count >= $min_count, got $count)"
     missing=$((missing + 1))
   fi
 done
