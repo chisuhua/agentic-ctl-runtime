@@ -533,8 +533,9 @@ TEST_CASE("CognitiveWorker 5 sequential real LLM tasks consistent",
         std::cerr << "[diag] seq-" << i << " ok=" << r.ok
                   << " meta=" << r.meta.dump() << std::endl;
         // graceful failure: LLM 输出缺参数等不确定因素 → 系统不 panic,
-        // 错误有明确 meta (非空 error_code)
+        // 错误有明确 meta (非空 error_code + 可诊断 error_message)
         REQUIRE(r.meta.contains("error_code"));
+        REQUIRE(r.meta.contains("error_message"));
       } else {
         REQUIRE(r.meta["tool_name"] == "echo");
         REQUIRE(r.data.contains("echoed"));

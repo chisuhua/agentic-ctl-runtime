@@ -23,6 +23,30 @@ using namespace agenticdsl;
 
 namespace {
 
+// real-llm-core-coverage A.5 回归守卫 (Oracle P1-1):
+// recording provider — 记录 generate() 收到的 req.params.model, 返回固定 JSON。
+// 用途: CI (skip=1) 下唯一能捕获 model 遮蔽修复回归的确定性守卫。
+class RecordingLLMProvider : public ILLMProvider {
+ public:
+  std::string last_model;
+  int generate_calls = 0;
+  GenerationResult result;
+
+  Result<GenerationResult, LLMError> generate(
+      const GenerationRequest& req, std::stop_token) override {
+    last_model = req.params.model;
+    ++generate_calls;
+    return Result<GenerationResult, LLMError>::success(result);
+  }
+
+  std::unique_ptr<IGenerationStream> generate_stream(
+      const GenerationRequest&, std::stop_token) override {
+    return nullptr;  // orchestrator 不用流式
+  }
+
+  std::vector<ModelInfo> available_models() const override { return {}; }
+};
+
 const std::string kEmptyDsl = R"(
 ### AgenticDSL `/main`
 ```yaml
@@ -175,4 +199,38 @@ TEST_CASE("SimpleCognitiveOrchestrator end-to-end JSON output",
   REQUIRE(j["data"]["echoed"] == "hello");
   REQUIRE(j["data"]["len"] == 5);
   REQUIRE(j["meta"]["tool_name"] == "echo");
+}
+
+// === Test 6 (real-llm-core-coverage A.5 / Oracle P1-1): model 遮蔽回归守卫 ===
+// react_once 必须传空 params.model 给 provider (adapter 才能 fallback config_.model)。
+// 若未来有人删掉 simple_orchestrator.cpp 的 req.params.model.clear(),
+// LLMParams 默认 "gpt-4o-mini" 会再次遮蔽真实 provider 配置 — 本测试确定性拦截。
+TEST_CASE("SimpleCognitiveOrchestrator passes empty model to provider",
+          "[cognitive][stage0][realllm-guard]") {
+  auto engine = DSLEngine::from_markdown(kEmptyDsl);
+  engine->register_tool(
+      "echo",
+      agenticdsl::ToolMetadata{"echo", "test", "test",
+                               agenticdsl::ToolCategory::ReadOnly,
+                               agenticdsl::LayerProfile::Workflow},
+      [](const std::unordered_map<std::string, std::string>& args) {
+        return nlohmann::json{{"echoed", args.at("message")}};
+      });
+  auto recorder = std::make_unique<RecordingLLMProvider>();
+  recorder->result.text = R"({"tool":"echo","args":{"message":"ok"}})";
+  auto* raw = recorder.get();
+  engine->set_llm_provider(std::move(recorder));  // 会被 decorate_provider 包装, raw 指针仍指向内层
+
+  SimpleCognitiveOrchestrator orch(&engine->get_tool_registry(),
+                                   engine->get_llm_provider());
+  bool done = false;
+  ToolResult captured;
+  orch.process("s6", [&](ToolResult r) {
+    captured = std::move(r);
+    done = true;
+  });
+  REQUIRE(done);
+  REQUIRE(captured.ok);
+  REQUIRE(raw->generate_calls == 1);
+  REQUIRE(raw->last_model.empty());  // 核心契约: model 必须为空 → adapter fallback
 }

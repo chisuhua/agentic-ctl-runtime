@@ -26,6 +26,19 @@
 - AND server 拒绝 (`"you passed gpt-4o-mini"`) → 真实 LLM 测试 FAIL
 - FIXED: react_once 增加 `req.params.model.clear()` → adapter fallback config_.model
 - AND A.2/A.4 真实 deepseek 测试 PASS (sibling test_e2e_real_llm 显式设 model 佐证)
+- AND A.5 回归守卫 (test_simple_orchestrator RecordingLLMProvider) 断言 model 为空,
+  CI (skip=1) 下确定性拦截该修复回归 (Oracle P1-1)
+
+#### Scenario: Model shadowing is systemic — other sites SHALL be tracked (Oracle P1-2)
+- GIVEN `req.params.model.clear()` 修复仅覆盖 simple_orchestrator.cpp
+- AND 同类潜伏站点: node_executor.cpp:356 (ll_call) / :574 (YieldNode) /
+  skill_interpreter.cpp:657-659 (IPC) / context_compactor.cpp:60 (摘要) / gepa_loop.cpp:115 (反射)
+- WHEN Phase E/G 在这些路径上启用真实 LLM (不经 orchestrator)
+- THEN 首个用例报 "you passed gpt-4o-mini" (预期红, 非环境问题)
+- AND 由独立跟进 change `fix-generation-request-model-default` 系统性修复
+  (Phase B-G 暴露 ≥3 站点 → 升为 Phase B 前置 P0)
+- AND telemetry 副作用已文档化: decorator 链 (cost/compliance/tracing) 在 orchestrator
+  路径记录 model="" — 不影响 token 扣费, Phase D (cost) 前确认
 
 ### Requirement: DomainWorkerPool 并发共享 provider (P0)
 

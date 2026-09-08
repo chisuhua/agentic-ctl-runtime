@@ -19,8 +19,27 @@
 - [x] A.3 测试: LLM 输出非 JSON 时 graceful failure (不 panic)
       — mock 确定性覆盖 (real 输出非 JSON 不可控)
 - [x] A.4 测试: 5 个 task 串行,验证一致性
-      — 断言为系统鲁棒性: 5 次调用全部优雅处理 (ok 或明确 error_code),
+      — 断言为系统鲁棒性: 5 次调用全部优雅处理 (ok 或明确 error_code+error_message),
       至少 1 次真实成功 (any_of); LLM 输出缺参数等不确定因素不 panic 不卡死
+- [x] A.5 回归守卫 (Oracle P1-1): test_simple_orchestrator.cpp 加 RecordingLLMProvider
+      — 断言 react_once 传给 generate() 的 req.params.model 为空 (CI skip 下唯一确定性守卫)
+
+## 系统性 model 遮蔽处置 (Oracle P1-2)
+
+`req.params.model.clear()` 修复仅覆盖 orchestrator 一个站点。**同类潜伏站点** (构造
+GenerationRequest 不设 params.model → 默认 "gpt-4o-mini" 遮蔽 adapter config_.model):
+
+- `node_executor.cpp:356` (GenerateSubgraphNode ll_call 路径)
+- `node_executor.cpp:574` (YieldNode 流式)
+- `skill_interpreter.cpp:657-659` (IPC llm_generate)
+- `context_compactor.cpp:60` (摘要)
+- `gepa_loop.cpp:115` (反射)
+
+**影响**: Phase E/G (Skill/Compactor) 不经过 orchestrator, clear() 救不了它们 — 首个真实
+LLM 用例将报 "you passed gpt-4o-mini" (预期红, 非环境问题)。处置: 独立跟进 change
+`fix-generation-request-model-default` 系统性修复 (若 Phase B-G 暴露 ≥3 站点 → 升为
+Phase B 前置 P0)。telemetry 副作用: decorator 链 (cost/compliance/tracing) 在 orchestrator
+路径记录 model="" — 已文档化, 不影响 token 扣费。
 
 ## Phase B — DomainWorkerPool 并发共享 provider (P0)
 

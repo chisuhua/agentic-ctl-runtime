@@ -3,8 +3,9 @@
 //
 // 从 sibling change (chat-real-llm-coverage) 的
 // examples/pdk_chat_demo/tests/test_helpers/real_llm_env.h 提升到项目级,
-// 供 core 测试树 (tests/) 各路径复用。API 与 sibling 完全一致, 仅 namespace
-// 从 pdk_chat_demo::testing 改为 agenticdsl::test (与 http_mock_server.h 一致)。
+// 供 core 测试树 (tests/) 各路径复用。API 与 sibling 一致 (额外新增
+// real_llm_env_skipped() — 供 core 树测试在 CI 下 short-circuit),
+// namespace 从 pdk_chat_demo::testing 改为 agenticdsl::test (与 http_mock_server.h 一致)。
 //
 // API:
 //   - require_real_llm_env() — 直接调 Catch2 FAIL (无 try/catch 多余样板)
