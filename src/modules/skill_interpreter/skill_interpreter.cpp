@@ -656,6 +656,12 @@ class SkillInterpreter::Impl {
     try {
       GenerationRequest gen_req;
       gen_req.prompt = prompt;
+      // ⚠️ NOT redundant: LLMParams = LLMConfig 别名, 默认 model = "gpt-4o-mini"
+      // (非空). 若不清空, CloudLLMAdapter L164 会拿默认遮蔽 factory 设置的真实
+      // model (skill 子进程通过 IPC llm_generate 调用父进程 LLM 时尤其重要,
+      // server 拒绝 "you passed gpt-4o-mini"). 清空让 adapter fallback.
+      // 详见 openspec/changes/fix-generation-request-model-default/.
+      gen_req.params.model.clear();
       auto result = llm_->generate(gen_req, std::stop_token{});
       if (result.has_value()) {
         return IPCResponse{true, {{"content", result.value().text}}};
