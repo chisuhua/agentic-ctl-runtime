@@ -82,18 +82,25 @@ TEST_CASE("ContextCompactor passes empty model to provider") {
 - MockLLMProvider 覆盖 cloud adapter 调用
 - CI skip=1 模式 + 无 key 时仍 PASS
 
-## Telemetry 副作用 (已文档化)
+## Telemetry 副作用 (已文档化, Oracle ship-with-fixes P2 修正)
 
 Decorator 链记录/发射 model 标签:
 - `cost_tracking_decorator.cpp:39` `budget_->record_llm_call(total_tokens, req.params.model)` → record "" (此前错误但非空的 "gpt-4o-mini")
 - `compliance_decorator.cpp:65` `model = req.params.model` → audit 记录 ""
 - `tracing_decorator.cpp:51,57` event payload `{"model", req.params.model}` → 事件 model ""
 
-**影响范围**:
-- ✅ **不影响**: token 扣费 (Cost 仍按 prompt+completion tokens 计费)
+**影响范围** (Oracle ship-with-fixes session `ses_f7e28d67affeOFrht9yY4IJRxn` 修正后表述):
+- ✅ **不影响**: token 计数 (Cost 仍按 prompt+completion tokens 计费, 数不变)
+- ⚠️ **影响**: 预算**费率** (per-token rate model 相关):
+  - `budget_controller.cpp:23 cost_per_token_for()`: `"gpt-4o-mini"` → 0.00000015, `""` → 通用 fallback 0.000001
+  - **方向**: 保守方向, 旧值 `"gpt-4o-mini"` 本就对非 OpenAI 端点不准; 新通用费率 6.7× 但接近实际
+  - **Phase D 决策点**: 是否在 decorator 层加 `effective_model(req)` 访问器让 telemetry label 与 L164 fallback 一致 (model 标签保真属正交问题, 不在本 change 范围)
 - ✅ **不影响**: 事件可达性 / bus dispatch
 - ⚠️ **影响**: cost/event 报告中 model 字段为空 (cosmetic)
 - ⚠️ **影响**: 任何 mock/单测断言 `meta["model"] == "deepseek-v4-flash"` 失败 — 需在 Phase D / Phase C 适配
+
+**不要**用 `= "unknown"` 替代 `clear()`——非空值直接破坏 L164 fallback (server 收到 "unknown" → 拒绝),
+`clear()` 是唯一正确机制.
 
 **Phase D (Cost) 前 note**: `real-llm-core-coverage/tasks.md` D 阶段加 "assertion 容忍 model="" 或显式设值" 提醒.
 
