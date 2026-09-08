@@ -33,7 +33,10 @@ for arg in "$@"; do
   esac
 done
 
-# 5 个 LLMParams 潜伏站点 (oracle ses_f7f5ef175ffeGKhxXLfBJjzLVX 实证)
+# 7 个 LLMParams 潜伏站点
+#   Wave 1 #1 (fix-generation-request-model-default, 5 sites): oracle ses_f7f5ef175ffeGKhxXLfBJjzLVX 实证
+#   Wave 2 (plan-execute-loop-realllm, 2 sites): Phase 1 实施时发现 Oracle 漏掉的
+#     plan_execute_loop.h:208 (plan_phase) + :254 (verify_phase), 补 clear()
 # 格式: "file|search_pattern|min_count|anchor_pattern|description"
 #   - search_pattern: 主匹配 (params.model.clear())
 #   - min_count: 该文件内至少出现次数 (防双站点退化: node_executor.cpp 有 2 处 clear)
@@ -44,6 +47,8 @@ SITES=(
   "src/modules/skill_interpreter/skill_interpreter.cpp|gen_req.params.model.clear()|1||IPC llm_generate (was line 657-659)"
   "src/core/context_compactor.cpp|req.params.model.clear()|1||ContextCompactor::compact summary (was line 60)"
   "src/modules/cognitive/gepa_loop.cpp|request.params.model.clear()|1||GEPA reflection (was line 115)"
+  "include/agenticdsl/pdk/agent_loops/plan_execute_loop.h|req.params.model.clear()|2|plan_phase|plan_phase LLM 生成 DSL (Wave 2 补加)"
+  "include/agenticdsl/pdk/agent_loops/plan_execute_loop.h|req.params.model.clear()|2|verify_phase|verify_phase LLM 评估 yes/no (Wave 2 补加, 锚点二次确认防 plan_phase 单 clear 误删 verify_phase clear 不被拦截)"
 )
 
 RED='\033[0;31m'
