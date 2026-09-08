@@ -148,12 +148,45 @@ ctest -R pdk_chat --output-on-failure
 
 - `test_chat_session`: ChatSession 单元测试（5 个 test case, 25 断言）
 - `test_e2e_mock`: 端到端 mock 模式测试（3 个 test case, 9 断言）
+- `test_chat_session_consumer` (Phase §8): try_pop_input / pop_next_input / try_peek_input 单元测试 (6 cases)
+- `test_chat_session_shared_registry` (§4.0.6): 跨组件 token identity + shared CancellationRegistry 测试 (4 cases)
+- `test_pdk_chat_demo_null_registry` (§4.0.13): `g_cancellation_registry == nullptr` → non-cancellable-but-executable 降级测试 (3 cases)
+- `test_pdk_chat_demo_stdin_e2e` (Phase §9): pipe-mode fork+exec E2E (3 cases — stdin race regression guard + EOF 优雅退出 + 多消息不丢失)
 
 全量:
 
 ```bash
 ctest -j$(nproc)
 ```
+
+## Single-Reader 模式 (chat-async-io-consumer-loop)
+
+自 Sprint 24 起，main 循环采用 **single-reader 模式** 消费 stdin — input thread 是 stdin 唯一 reader，main loop 仅从 steering/follow-up 队列消费。该 fix 解决 2026-09-07 现场复现的 "首字符 `w` 被吞 + 第二轮 stdin 挂死" bug（双读 race）。
+
+### 关键 API
+
+- `ChatSession::try_pop_input()` — 优先级 pop (steering > follow-up)
+- `ChatSession::pop_next_input(timeout)` — 阻塞 pop，超时或 shutdown 返回 nullopt
+- `ChatSession::try_peek_input()` — peek 不消费，用于 interrupt_thread 场景
+- `ChatSession` 构造新增 6th 参数 `shared_ptr<CancellationRegistry>` — 与 loop_agent 共享 token identity
+- `/cancel` 命令 — 通过 main loop path 触发 `request_stop()`（无活动 turn 时自然 no-op）
+
+### 内部同步原语
+
+- `std::condition_variable input_cv_` + `std::mutex input_cv_mutex_` — main loop 阻塞等待
+- `std::atomic<size_t> pending_input_count_` — fast-path + predicate 无 race 检查
+- 顺序保证: push → count++ → notify_one（避免丢失唤醒）
+- EOF shutdown: `stop_input_thread_.store(true)` → `cv.notify_all()` → main loop nullopt
+
+### 共享 CancellationRegistry
+
+`commands/cancellation_globals.{h,cpp}` 声明 `pdk_chat_demo::g_cancellation_registry` 全局 — main.cpp 在 ChatSession 构造前创建并传入。`pdk/loop_agent/src/pdk_entry.cpp` 删除 file-static `g_loop_registry`，改用共享全局 — 解决 token identity mismatch（C1 fix）。
+
+Null-guard fallback: 测试二进制未初始化全局时，`g_cancellation_registry == nullptr` → loop/run 跳过 resolve 步骤，保持默认空 token，照常执行（non-cancellable-but-executable，不返回 error）。
+
+### 相关 OpenSpec
+
+`openspec/changes/chat-async-io-consumer-loop/` — 完整 design / tasks / specs / 4 轮 Oracle 审查记录。
 
 ## 常见问题
 

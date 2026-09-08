@@ -561,6 +561,124 @@ add_test(
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 
+# test_chat_session_consumer — §8 chat-async-io-consumer-loop: try_pop_input + pop_next_input + try_peek_input
+add_executable(test_chat_session_consumer
+    test_chat_session_consumer.cpp
+    ${CATCH_INCLUDE_DIR}/catch_amalgamated.cpp
+    ${CATCH_INCLUDE_DIR}/main_test_runner.cpp
+)
+target_link_libraries(test_chat_session_consumer PRIVATE
+    pdk_chat_demo_obj
+    agenticdsl_includes
+    agenticdsl_core
+    hydraforge_pdk
+    Threads::Threads
+)
+target_include_directories(test_chat_session_consumer PRIVATE
+    ${CATCH_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/external/nlohmann_json/single_include
+)
+target_compile_definitions(test_chat_session_consumer PRIVATE
+    CATCH_CONFIG_ENABLE_ALL_STRINGMAKERS=1
+)
+add_test(
+    NAME test_chat_session_consumer
+    COMMAND test_chat_session_consumer
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+# test_chat_session_shared_registry — §4.0.6: ChatSession register → shared registry → loop_agent resolve identity
+add_executable(test_chat_session_shared_registry
+    test_chat_session_shared_registry.cpp
+    ${CATCH_INCLUDE_DIR}/catch_amalgamated.cpp
+    ${CATCH_INCLUDE_DIR}/main_test_runner.cpp
+)
+target_link_libraries(test_chat_session_shared_registry PRIVATE
+    pdk_chat_demo_obj
+    agenticdsl_includes
+    agenticdsl_core
+    hydraforge_pdk
+    Threads::Threads
+)
+target_include_directories(test_chat_session_shared_registry PRIVATE
+    ${CATCH_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/external/nlohmann_json/single_include
+)
+target_compile_definitions(test_chat_session_shared_registry PRIVATE
+    CATCH_CONFIG_ENABLE_ALL_STRINGMAKERS=1
+)
+add_test(
+    NAME test_chat_session_shared_registry
+    COMMAND test_chat_session_shared_registry
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+# test_pdk_chat_demo_null_registry — §4.0.13: g_cancellation_registry == nullptr → non-cancellable-but-executable fallback
+add_executable(test_pdk_chat_demo_null_registry
+    test_pdk_chat_demo_null_registry.cpp
+    ${CATCH_INCLUDE_DIR}/catch_amalgamated.cpp
+    ${CATCH_INCLUDE_DIR}/main_test_runner.cpp
+)
+target_link_libraries(test_pdk_chat_demo_null_registry PRIVATE
+    pdk_chat_demo_obj
+    agenticdsl_includes
+    agenticdsl_core
+    hydraforge_pdk
+    Threads::Threads
+)
+target_include_directories(test_pdk_chat_demo_null_registry PRIVATE
+    ${CATCH_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/external/nlohmann_json/single_include
+)
+target_compile_definitions(test_pdk_chat_demo_null_registry PRIVATE
+    CATCH_CONFIG_ENABLE_ALL_STRINGMAKERS=1
+)
+add_test(
+    NAME test_pdk_chat_demo_null_registry
+    COMMAND test_pdk_chat_demo_null_registry
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+# test_pdk_chat_demo_stdin_e2e — §9: fork+exec pipe-mode E2E (single-reader mode regression guard)
+add_executable(test_pdk_chat_demo_stdin_e2e
+    test_pdk_chat_demo_stdin_e2e.cpp
+    ${CATCH_INCLUDE_DIR}/catch_amalgamated.cpp
+    ${CATCH_INCLUDE_DIR}/main_test_runner.cpp
+)
+target_link_libraries(test_pdk_chat_demo_stdin_e2e PRIVATE
+    pdk_chat_demo_obj
+    agenticdsl_includes
+    agenticdsl_core
+    hydraforge_pdk
+    Threads::Threads
+)
+target_include_directories(test_pdk_chat_demo_stdin_e2e PRIVATE
+    ${CATCH_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/external/nlohmann_json/single_include
+)
+target_compile_definitions(test_pdk_chat_demo_stdin_e2e PRIVATE
+    CATCH_CONFIG_ENABLE_ALL_STRINGMAKERS=1
+    PDK_CHAT_DEMO_PATH="${PROJECT_BINARY_DIR}/examples/pdk_chat_demo/pdk_chat_demo"
+)
+target_link_options(test_pdk_chat_demo_stdin_e2e PRIVATE -Wl,--export-dynamic)
+add_test(
+    NAME test_pdk_chat_demo_stdin_e2e
+    COMMAND test_pdk_chat_demo_stdin_e2e
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/..
+)
+
 # test_model_switching — Wave 3-A Phase C: /model runtime switching tests
 add_executable(test_model_switching
     test_model_switching.cpp
