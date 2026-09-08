@@ -59,13 +59,32 @@
 - THEN 系统不 panic, result.message 有意义
 - AND retries_used ≤ 3 (PlanExecuteLoop 上限)
 
-### Requirement: scope 边界 (Out of Scope)
+### Requirement: scope 边界修正 (scope 扩展记录)
 
-本 change SHALL NOT 修改 PlanExecuteLoop production code 或引入新的生产依赖; 下列 SHALL 明确排除在 scope 外.
+**Scope 修正 (Oracle ship-gate ses_f7cdf267bffeddRNuPpIcdOZd0)**:
+原 proposal/spec 假设 Wave 1 #1 已 ship `plan_execute_loop.h` 的 2 站点 clear(),
+但 Wave 1 #1 Oracle 独立审查 (ses_f7f5ef175ffeGKhxXLfBJjzLVX) 实证 5 个站点时遗漏
+`include/agenticdsl/pdk/agent_loops/plan_execute_loop.h:208` (plan_phase) + `:254`
+(verify_phase), ship commit 仅覆盖 4 个文件 (node_executor / skill_interpreter /
+context_compactor / gepa_loop).
 
-#### Scenario: PlanExecuteLoop production code SHALL NOT be changed
-- 理由: model 遮蔽属 `fix-generation-request-model-default` 独立 change
-- AND verify_phase 判定逻辑 ("yes" substring) 是契约, 不修改
+本 change 实施时发现遗漏, 立即扩展 scope 补 2 站点 clear() (per AGENTS.md
+模式 #1 test-driven bug discovery closed loop step #2). 关闭 "TDD 发现 → 修复 →
+守卫 → 测试" 闭环. 拆独立 change 反而会让测试先对着已知坏路径写 (真实 deepseek
+必撞 server 拒绝 "you passed gpt-4o-mini").
+
+**修正后的 scope 边界**:
+
+#### Scenario: 2 站点 model 遮蔽 SHALL be fixed in this change
+- GIVEN plan_execute_loop.h:208 (plan_phase) + :254 (verify_phase) 是 Oracle
+  漏掉的 LLMParams 默认遮蔽潜伏面
+- WHEN 本 change 实施
+- THEN 加 `req.params.model.clear()` + AGENTS.md 模式 #1 "NOT redundant" 注释
+- AND 现有 spec.md §Scope 边界 (Out) 的 "❌ 不修改 PlanExecuteLoop production code"
+  SHALL 被本 requirement 覆盖 (scope 扩展决策已记录)
+
+#### Scenario: verify_phase 判定逻辑 ("yes" substring) SHALL NOT be changed
+- 理由: 现有契约保持稳定, 大小写不敏感 substring 是 ship 契约
 - AND prompt 设计改进属 prompt-engineering follow-up, 不在本 change
 
 #### Scenario: Token passthrough SHALL NOT be in this change

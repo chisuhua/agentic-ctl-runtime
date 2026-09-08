@@ -56,10 +56,13 @@ LLM 真实输出能被 DSLEngine 解析。
 - ✅ 显式设 `req.params.model` (规避默认遮蔽, 即使 model 修复 ship 也保持)
 - ✅ 诊断输出 (`std::cerr` 打印 plan / verify 响应, 失败时定位)
 - ✅ 复跑 `tests/test_plan_execute_restart.cpp` 零回归 (mock 路径不变)
+- ✅ **2 站点 model 遮蔽修复** (plan_execute_loop.h:208 plan_phase + :254 verify_phase,
+  Wave 1 #1 Oracle 漏掉的 2 个潜伏面, 实施时发现立即扩展 scope)
 
 ### Scope Boundaries (Out)
 
-- ❌ 不修改 `plan_execute_loop.h` 生产代码 (model 遮蔽属 sibling fix-up change)
+- ❌ ~~不修改 `plan_execute_loop.h` 生产代码~~ **覆盖**: 见 §Scope Boundaries (In)
+  第 6 项 (scope 扩展记录, Oracle ship-gate ses_f7cdf267bffeddRNuPpIcdOZd0 修正)
 - ❌ 不修改 `verify_phase` "yes" 判定逻辑 (大小写不敏感 substring, 现有契约)
 - ❌ 不实现 `/model` 运行时 provider 切换 (属 `chat-model-switch-real`)
 - ❌ 不修 token passthrough (verify_phase 当前传 `token`, plan_phase 也是)
