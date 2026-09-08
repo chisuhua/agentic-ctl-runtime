@@ -510,7 +510,7 @@ TEST_CASE("DomainWorkerPool 4 workers concurrent real LLM via shared provider",
   // LLMProviderFactory::create cloud 路径注入 SerializingDecorator (mutex + cv
   // 串行化 generate), 根除 N≥2 worker 并发 + Authorization + https 的 SIGSEGV.
   // 本测试现恢复真实执行 (4 worker 共享 provider, 4 task 真实 deepseek).
-  // 真根因修复 (OpenSSL 3.0 + httplib 升级) 留 ADR-XXXX follow-up.
+  // 真根因修复 (OpenSSL 3.0 + httplib 升级) 留 ADR-0087 follow-up.
   auto cfg = agenticdsl::test::real_llm_config();
   auto provider = agenticdsl::test::real_llm_provider();
   ILLMProvider* shared = provider.get();

@@ -100,7 +100,7 @@ std::unique_ptr<ILLMProvider> LLMProviderFactory::create(const LLMConfig& config
 **follow-up note** (本 change archive 时记入):
 - 升级到 OpenSSL 3.0 + httplib 最新版
 - 移除 SerializingDecorator (真正支持并发)
-- 见 ADR-XXXX "Cloud adapter threading model" (本 change 不创建, 留给方案 B)
+- 见 ADR-0087 "Cloud adapter threading model" (追踪 change: cloud-adapter-threading-root-cause)
 
 ## 测试设计
 

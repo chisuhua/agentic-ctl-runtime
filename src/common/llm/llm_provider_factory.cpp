@@ -107,7 +107,7 @@ std::unique_ptr<ILLMProvider> LLMProviderFactory::create(const LLMConfig& config
     // factory 层注入, 调用方无感知 (返回类型仍为 unique_ptr<ILLMProvider>).
     // mock / llama 路径不包装 — 零性能影响 (B.3/B.4 mock 测试不变).
     // ⚠️ NOT redundant: 牺牲并发 LLM 调用换取零 SIGSEGV. 真根因修复 (OpenSSL 3.0
-    // + httplib 升级) 见 follow-up ADR-XXXX.
+    // + httplib 升级) 见 follow-up ADR-0087.
     auto adapter = cloud_factory->create(config);
     return std::make_unique<SerializingDecorator>(
         std::move(adapter), "cloud-" + backend);
