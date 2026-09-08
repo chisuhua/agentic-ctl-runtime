@@ -506,18 +506,11 @@ TEST_CASE("DomainWorkerPool 4 workers concurrent real LLM via shared provider",
     SUCCEED("skipped: HYDRAFORGE_SKIP_REAL_LLM=1");
     return;
   }
-  // KNOWN ISSUE (待跟进 change `fix-cloud-adapter-multithreading` 修复):
-  // 当前环境下 N≥2 worker 并发调 CloudLLMAdapter 到真实 https (Authorization header
-  // 存在) → httplib::Client::Post 内部 create_client_socket SIGSEGV
-  // (socket_options_ 栈 corruption; OpenSSL/SSL_CTX 多线程 init 或 httplib
-  // Authorization header 处理的栈问题). 单线程 pool(1) 与无 Authorization 的 mock
-  // provider 路径 PASS; A.2 (CognitiveWorker 单线程真实 deepseek) 已 ship PASS.
-  // B.2 在 fix-up change 修复前以 WARN+SUCCEED 标记已知断裂, 不阻塞本 change ship.
-  // (Catch2 SKIP macro 在 ctest 并行下会干扰 jthread/InMemoryBus 析构清理, 用
-  //  SUCCEED + return 保留测试骨架但跳过执行.)
-  WARN("CloudLLMAdapter multi-thread https SIGSEGV — deferred to "
-       "fix-cloud-adapter-multithreading change; B.2 disabled pending fix");
-  SUCCEED("B.2 deferred (see WARN above)");
+  // Wave 1 #2 (fix-cloud-adapter-multithreading) 已 ship:
+  // LLMProviderFactory::create cloud 路径注入 SerializingDecorator (mutex + cv
+  // 串行化 generate), 根除 N≥2 worker 并发 + Authorization + https 的 SIGSEGV.
+  // 本测试现恢复真实执行 (4 worker 共享 provider, 4 task 真实 deepseek).
+  // 真根因修复 (OpenSSL 3.0 + httplib 升级) 留 ADR-XXXX follow-up.
   auto cfg = agenticdsl::test::real_llm_config();
   auto provider = agenticdsl::test::real_llm_provider();
   ILLMProvider* shared = provider.get();
