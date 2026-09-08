@@ -115,6 +115,13 @@ ToolResult SimpleCognitiveOrchestrator::react_once(const std::string& user_promp
   // 2) 调用 LLM
   GenerationRequest req;
   req.prompt = prompt + "\n[user] " + user_prompt;
+  // LLMParams = LLMConfig 别名, 默认 model = "gpt-4o-mini" (非空)。
+  // 若不清空, CloudLLMAdapter::build_request_body L164 (req.params.model.empty() ?
+  // config_.model : req.params.model) 会拿默认 "gpt-4o-mini" 遮蔽 provider 配置的
+  // 真实 model (如 deepseek-v4-flash) → 真实 LLM 测试失败 (server 拒绝)。
+  // orchestrator 无 model 概念, 清空让 adapter fallback 到 config_.model。
+  // 实测: sibling test_e2e_real_llm 显式设 req.params.model 才成功, 佐证此遮蔽 bug。
+  req.params.model.clear();
   auto result = llm_->generate(req, {});
   if (!result.has_value()) {
     return ToolResult::error(

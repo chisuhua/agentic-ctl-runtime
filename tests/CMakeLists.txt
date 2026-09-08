@@ -186,6 +186,11 @@ file(GLOB SINGLE_TEST_SOURCES "test_*.cpp")
 foreach(TEST_SRC ${SINGLE_TEST_SOURCES})
     # 提取测试名，如 test_reg.cpp -> test_reg
     get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)
+    # real-llm-core-coverage Phase 0: sibling (chat-real-llm-coverage) 已在
+    # examples/pdk_chat_demo/tests 注册同名 target → core 树副本改名避免 CMP0002 冲突
+    if(TEST_NAME STREQUAL "test_real_llm_env_helper")
+        set(TEST_NAME "test_real_llm_env_helper_core")
+    endif()
     add_catch_test(${TEST_NAME} ${TEST_SRC})
 endforeach()
 

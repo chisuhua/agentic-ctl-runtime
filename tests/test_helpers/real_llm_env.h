@@ -1,0 +1,138 @@
+// tests/test_helpers/real_llm_env.h
+// real-llm-core-coverage Phase 0: 项目级真实 LLM env helper
+//
+// 从 sibling change (chat-real-llm-coverage) 的
+// examples/pdk_chat_demo/tests/test_helpers/real_llm_env.h 提升到项目级,
+// 供 core 测试树 (tests/) 各路径复用。API 与 sibling 完全一致, 仅 namespace
+// 从 pdk_chat_demo::testing 改为 agenticdsl::test (与 http_mock_server.h 一致)。
+//
+// API:
+//   - require_real_llm_env() — 直接调 Catch2 FAIL (无 try/catch 多余样板)
+//   - real_llm_config()       — 从 env 构造 LLMConfig (deepseek 优先)
+//   - real_llm_provider()     — factory.create() wrapper
+//
+// 行为变更 (env var 真值表):
+//   HYDRAFORGE_SKIP_REAL_LLM=1     → 静默 return (opt-in skip)
+//   else + key set (DEEPSEEK/MINIMAX) → run
+//   else + no key                   → FAIL (硬失败)
+//
+// 设计依据 (Oracle 审查 sibling change + design.md §helper 迁移):
+//   - ILLMProvider: common/llm/llm_types.h (非 include/agenticdsl/llm/...)
+//   - Header-only inline (与 tests/test_helpers/http_mock_server.h 一致)
+//   - pdk_chat_demo helper 保留为内联副本 (便于参考), 本项目级 helper 独立演进
+//
+// 用法 (per test):
+//   #include "test_helpers/real_llm_env.h"
+//   TEST_CASE("...real LLM test...", "[realllm]") {
+//     agenticdsl::test::require_real_llm_env();
+//     // ... test body (API key guaranteed non-empty below) ...
+//   }
+
+#pragma once
+
+#include <cstdlib>
+#include <memory>
+#include <string>
+
+#include <catch_amalgamated.hpp>
+
+#include "common/llm/llm_types.h"            // ILLMProvider (src/common/llm/llm_types.h)
+#include "common/llm/llm_provider_factory.h" // LLMProviderFactory
+#include "common/llm/llm_config.h"           // LLMConfig
+
+namespace agenticdsl::test {
+
+// ===== env var 真值表 =====
+//
+// 单一路径 — 直接调 Catch2 FAIL:
+//   - skip flag set      → 静默 return
+//   - key set (deepseek) → return, key is DEEPSEEK_API_KEY
+//   - key set (minimax)  → return, key is MINIMAX_API_KEY
+//   - no key + no skip   → FAIL("real LLM env required: ...")
+//
+// 调用方不需要 try/catch (Catch2 FAIL 内部抛异常, Catch2 标记当前 TEST_CASE 为 FAIL).
+inline void require_real_llm_env() {
+  // 1. opt-in skip
+  if (const char* skip = std::getenv("HYDRAFORGE_SKIP_REAL_LLM");
+      skip && std::string(skip) == "1") {
+    return;  // 静默 skip — 测试应自行 short-circuit
+  }
+  // 2. DEEPSEEK_API_KEY set → ok
+  if (const char* ds = std::getenv("DEEPSEEK_API_KEY");
+      ds && ds[0] != '\0') {
+    return;
+  }
+  // 3. MINIMAX_API_KEY set → ok
+  if (const char* mm = std::getenv("MINIMAX_API_KEY");
+      mm && mm[0] != '\0') {
+    return;
+  }
+  // 4. 无 key + 无 skip → 硬失败
+  FAIL("real LLM env required: set DEEPSEEK_API_KEY or MINIMAX_API_KEY, "
+       "or set HYDRAFORGE_SKIP_REAL_LLM=1 to opt-in skip");
+}
+
+// 查询 skip flag — 供测试主体在 require_real_llm_env() 后 short-circuit:
+//   require_real_llm_env();
+//   if (real_llm_env_skipped()) { SUCCEED("skipped: HYDRAFORGE_SKIP_REAL_LLM=1"); return; }
+// 必要性: skip=1 时 require 静默 return, 但测试主体若不提前返回,
+// 会用空 api_key 构造 provider → generate 失败 → 测试误 FAIL (CI 必红).
+// sibling (pdk_chat_demo) 测试无需此函数 (examples=OFF 时 CI 不构建),
+// 但 core 树测试 (CI 默认构建) 必须显式 short-circuit.
+inline bool real_llm_env_skipped() {
+  const char* skip = std::getenv("HYDRAFORGE_SKIP_REAL_LLM");
+  return skip && std::string(skip) == "1";
+}
+
+// Helper struct — 暴露从 env 解析后的 provider config
+struct RealLLMConfig {
+  std::string provider;       // "deepseek" | "minimax"
+  std::string model;          // e.g. "deepseek-v4-flash"
+  std::string api_url;        // provider endpoint
+  std::string api_endpoint;   // path
+  std::string api_key;        // 取自 env (helper 内部绝不 log 此字段)
+  std::string api_key_env;    // "DEEPSEEK_API_KEY" | "MINIMAX_API_KEY"
+  std::string env_used;       // 同 api_key_env (冗余, 便于日志)
+};
+
+// 从 env 构造配置 (deepseek 优先, fallback minimax)
+// 假定 require_real_llm_env() 已调用 (key 非空已保证)
+inline RealLLMConfig real_llm_config() {
+  RealLLMConfig cfg;
+  if (const char* ds = std::getenv("DEEPSEEK_API_KEY");
+      ds && ds[0] != '\0') {
+    cfg.provider = "deepseek";
+    cfg.model = "deepseek-v4-flash";
+    cfg.api_url = "https://api.deepseek.com";
+    cfg.api_endpoint = "/chat/completions";
+    cfg.api_key = ds;
+    cfg.api_key_env = "DEEPSEEK_API_KEY";
+  } else if (const char* mm = std::getenv("MINIMAX_API_KEY");
+             mm && mm[0] != '\0') {
+    cfg.provider = "minimax";
+    cfg.model = "minimax-text-01";
+    cfg.api_url = "https://api.minimax.chat";  // placeholder URL, 当前未使用
+    cfg.api_endpoint = "/v1/text/chatcompletion_v2";
+    cfg.api_key = mm;
+    cfg.api_key_env = "MINIMAX_API_KEY";
+  }
+  cfg.env_used = cfg.api_key_env;
+  return cfg;
+}
+
+// 构造 LLMProvider 实例 (返回 unique_ptr, 调用方持有)
+inline std::unique_ptr<agenticdsl::ILLMProvider> real_llm_provider() {
+  auto cfg = real_llm_config();
+  agenticdsl::LLMConfig llm_cfg;
+  llm_cfg.provider = cfg.provider;
+  llm_cfg.model = cfg.model;
+  llm_cfg.api_url = cfg.api_url;
+  llm_cfg.api_endpoint = cfg.api_endpoint;
+  llm_cfg.api_key = cfg.api_key;
+  llm_cfg.api_key_env = cfg.api_key_env;
+
+  agenticdsl::LLMProviderFactory factory;
+  return factory.create(llm_cfg);
+}
+
+}  // namespace agenticdsl::test

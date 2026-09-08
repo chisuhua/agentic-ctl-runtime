@@ -18,6 +18,15 @@
 - AND tool 实际被调用
 - AND no panic (LLM 输出非 JSON 不应 crash)
 
+#### Scenario: Model default value SHALL not shadow provider config (found & fixed)
+- GIVEN `LLMParams = LLMConfig` 别名 (llm_types.h) 且 `LLMConfig::model` 默认 `"gpt-4o-mini"` (llm_config.h)
+- AND SimpleCognitiveOrchestrator::react_once 构造 `GenerationRequest req` 不设 params.model
+- WHEN real deepseek provider (config.model = deepseek-v4-flash) 收到请求
+- THEN CloudLLMAdapter L164 (`req.params.model.empty() ? config_.model : req.params.model`) 原会取非空默认 "gpt-4o-mini" 遮蔽真实 model
+- AND server 拒绝 (`"you passed gpt-4o-mini"`) → 真实 LLM 测试 FAIL
+- FIXED: react_once 增加 `req.params.model.clear()` → adapter fallback config_.model
+- AND A.2/A.4 真实 deepseek 测试 PASS (sibling test_e2e_real_llm 显式设 model 佐证)
+
 ### Requirement: DomainWorkerPool 并发共享 provider (P0)
 
 `DomainWorkerPool` N 个 std::jthread worker 各自通过共享 provider 实例并发 generate (N=4)。真实 LLM 测试 SHALL 验证并发线程安全 + 限速合理性。

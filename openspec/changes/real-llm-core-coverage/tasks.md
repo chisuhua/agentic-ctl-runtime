@@ -1,16 +1,26 @@
 ## Phase 0 — helper 迁移 (Foundation)
 
-- [ ] 0.1 迁移 `examples/pdk_chat_demo/tests/test_helpers/real_llm_env.h` → `tests/test_helpers/real_llm_env.h`
-- [ ] 0.2 同步 `tests/test_real_llm_env_helper.cpp` (4 cases 复用 sibling helper)
-- [ ] 0.3 在 CMakeLists 顶层 (root tests/) 添加 helper include path
-- [ ] 0.4 修改 chat-real-llm-coverage 的 helper 自测使用新的项目级 helper
+- [x] 0.1 迁移 `examples/pdk_chat_demo/tests/test_helpers/real_llm_env.h` → `tests/test_helpers/real_llm_env.h`
+- [x] 0.2 同步 `tests/test_real_llm_env_helper.cpp` (4 cases 复用 sibling helper)
+- [x] 0.3 在 CMakeLists 顶层 (root tests/) 添加 helper include path
+      — 注: `${CATCH_INCLUDE_DIR}`=tests/ 已解析 `test_helpers/`, 零 include 变更;
+      target 名与 sibling 冲突 → 改名 `test_real_llm_env_helper_core` (CMakeLists L186-192)
+- [x] 0.4 修改 chat-real-llm-coverage 的 helper 自测使用新的项目级 helper
+      — 注: design.md 决策 pdk helper 保留为内联副本, 不修改已 commit sibling 文件;
+      项目级自测独立覆盖同 4 cases (namespace agenticdsl::test) 验证 API 一致
 
 ## Phase A — CognitiveWorker ReAct JSON 契约 (P0)
 
-- [ ] A.1 扩展 `tests/test_cognitive_worker.cpp` 加真实 LLM case
-- [ ] A.2 测试: CognitiveWorker submit task → real deepseek → JSON `{"tool": ...}` 验证
-- [ ] A.3 测试: LLM 输出非 JSON 时 graceful failure (不 panic)
-- [ ] A.4 测试: 5 个 task 串行,验证一致性
+- [x] A.1 扩展 `tests/test_cognitive_worker.cpp` 加真实 LLM case
+- [x] A.2 测试: CognitiveWorker submit task → real deepseek → JSON `{"tool": ...}` 验证
+      — 发现并修复生产 bug: `LLMParams=LLMConfig` 默认 model="gpt-4o-mini" 非空,
+      SimpleCognitiveOrchestrator::react_once 未清空 → 遮蔽 adapter config_.model
+      (simple_orchestrator.cpp react_once 加 `req.params.model.clear()`), 零回归
+- [x] A.3 测试: LLM 输出非 JSON 时 graceful failure (不 panic)
+      — mock 确定性覆盖 (real 输出非 JSON 不可控)
+- [x] A.4 测试: 5 个 task 串行,验证一致性
+      — 断言为系统鲁棒性: 5 次调用全部优雅处理 (ok 或明确 error_code),
+      至少 1 次真实成功 (any_of); LLM 输出缺参数等不确定因素不 panic 不卡死
 
 ## Phase B — DomainWorkerPool 并发共享 provider (P0)
 

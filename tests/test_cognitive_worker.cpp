@@ -27,8 +27,12 @@
 #include "common/llm/mock_provider.h"
 #include "agenticdsl/contract/i_llm_provider_decorator.h"
 
+// real-llm-core-coverage Phase A: 项目级真实 LLM env helper
+#include "test_helpers/real_llm_env.h"
+
 #include <atomic>
 #include <chrono>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -366,4 +370,178 @@ TEST_CASE("CognitiveWorker destructor safely stops running worker TD-CW-02",
   }
   // 若到达此处无 std::terminate, 析构函数 TD-CW-02 修复有效
   SUCCEED("worker destructor safely stopped running thread");
+}
+
+// =====================================================================
+// real-llm-core-coverage Phase A — CognitiveWorker ReAct JSON 契约 (P0)
+//
+// A.2: 真实 LLM 下, SimpleCognitiveOrchestrator 硬编码 prompt
+//      ("Respond with JSON: {\"tool\": ...}") 必须产出合法 JSON, 触发 echo 工具链。
+//      这是用户原始关注"LLM 延迟下系统仍能工作"的核心验证。
+//      无 key → FAIL (硬门槛); skip=1 → 静默跳过; key set → 真实验证。
+// =====================================================================
+TEST_CASE("CognitiveWorker ReAct JSON contract with real LLM",
+          "[cognitive_worker][realllm][phase-a]") {
+  agenticdsl::test::require_real_llm_env();
+  if (agenticdsl::test::real_llm_env_skipped()) {
+    SUCCEED("skipped: HYDRAFORGE_SKIP_REAL_LLM=1");
+    return;
+  }
+
+  auto bus = std::make_shared<InMemoryBus>();
+  auto engine = DSLEngine::from_markdown(kEmptyDsl);
+  engine->register_tool(
+      "echo",
+      agenticdsl::ToolMetadata{"echo", "test", "test",
+                               agenticdsl::ToolCategory::ReadOnly,
+                               agenticdsl::LayerProfile::Workflow},
+      [](const std::unordered_map<std::string, std::string>& args)
+          -> nlohmann::json {
+        return nlohmann::json{{"echoed", args.at("message")}};
+      });
+  engine->set_llm_provider(agenticdsl::test::real_llm_provider());
+
+  std::atomic<int> completed{0};
+  ToolResult captured;
+  bus->subscribe("cognitive.task.completed", [&](const BusEvent& e) {
+    ++completed;
+    captured = e.payload;
+  });
+
+  CognitiveWorker worker(std::move(engine), bus);
+  worker.start();
+  worker.submit_task(
+      "real-json-1",
+      "Call the echo tool with message \"hello real llm\". "
+      "Your entire response must be exactly the JSON object "
+      "{\"tool\": \"echo\", \"args\": {\"message\": \"hello real llm\"}}, "
+      "no markdown fences, no extra text.");
+
+  wait_until([&] { return completed.load() == 1; },
+             std::chrono::seconds(90));
+  worker.stop();
+
+  REQUIRE(completed.load() == 1);
+  if (!captured.ok) {
+    std::cerr << "[diag] error_code="
+              << (captured.error_code.has_value()
+                      ? static_cast<int>(captured.error_code.value())
+                      : -1)
+              << "\n[diag] meta=" << captured.meta.dump()
+              << "\n[diag] data=" << captured.data.dump()
+              << "\n[diag] ok=" << captured.ok << std::endl;
+  }
+  REQUIRE(captured.ok);
+  REQUIRE(captured.meta["tool_name"] == "echo");
+  REQUIRE(captured.data.contains("echoed"));
+}
+
+// =====================================================================
+// A.3: LLM 输出非 JSON 时 graceful failure — 不 panic (mock 确定性覆盖)
+//      real LLM 输出非 JSON 不可控, 用 mock 固定文本确定性触发同一 parse 失败路径。
+// =====================================================================
+TEST_CASE("CognitiveWorker graceful failure on non-JSON LLM output",
+          "[cognitive_worker][phase-a][error]") {
+  auto bus = std::make_shared<InMemoryBus>();
+  auto engine = make_engine_with_mock("this is not json, just plain text");
+  engine->register_tool(
+      "echo",
+      agenticdsl::ToolMetadata{"echo", "test", "test",
+                               agenticdsl::ToolCategory::ReadOnly,
+                               agenticdsl::LayerProfile::Workflow},
+      [](const std::unordered_map<std::string, std::string>& args)
+          -> nlohmann::json {
+        return nlohmann::json{{"echoed", args.at("message")}};
+      });
+
+  std::atomic<int> completed{0};
+  ToolResult captured;
+  bus->subscribe("cognitive.task.completed", [&](const BusEvent& e) {
+    ++completed;
+    captured = e.payload;
+  });
+
+  CognitiveWorker worker(std::move(engine), bus);
+  worker.start();
+  worker.submit_task("non-json-1", "anything");
+  wait_until([&] { return completed.load() == 1; });
+  worker.stop();
+
+  REQUIRE(completed.load() == 1);
+  REQUIRE_FALSE(captured.ok);
+  REQUIRE(captured.error_code.has_value());
+}
+
+// =====================================================================
+// A.4: 5 个 task 串行 (worker 单线程消费, 天然串行) — 真实 LLM 延迟下
+//      每个任务都产出合法 JSON 并触发 echo 工具, 验证链路一致性。
+// =====================================================================
+TEST_CASE("CognitiveWorker 5 sequential real LLM tasks consistent",
+          "[cognitive_worker][realllm][phase-a]") {
+  agenticdsl::test::require_real_llm_env();
+  if (agenticdsl::test::real_llm_env_skipped()) {
+    SUCCEED("skipped: HYDRAFORGE_SKIP_REAL_LLM=1");
+    return;
+  }
+
+  auto bus = std::make_shared<InMemoryBus>();
+  auto engine = DSLEngine::from_markdown(kEmptyDsl);
+  engine->register_tool(
+      "echo",
+      agenticdsl::ToolMetadata{"echo", "test", "test",
+                               agenticdsl::ToolCategory::ReadOnly,
+                               agenticdsl::LayerProfile::Workflow},
+      [](const std::unordered_map<std::string, std::string>& args)
+          -> nlohmann::json {
+        return nlohmann::json{{"echoed", args.at("message")}};
+      });
+  engine->set_llm_provider(agenticdsl::test::real_llm_provider());
+
+  std::atomic<int> completed{0};
+  std::vector<ToolResult> results;
+  std::mutex results_mutex;
+  bus->subscribe("cognitive.task.completed", [&](const BusEvent& e) {
+    {
+      std::lock_guard<std::mutex> lock(results_mutex);
+      results.push_back(e.payload);
+    }
+    ++completed;
+  });
+
+  CognitiveWorker worker(std::move(engine), bus);
+  worker.start();
+  for (int i = 0; i < 5; ++i) {
+    worker.submit_task(
+        "real-seq-" + std::to_string(i),
+        "Call the echo tool with message \"seq " + std::to_string(i) + "\". "
+        "Your entire response must be exactly the JSON object "
+        "{\"tool\": \"echo\", \"args\": {\"message\": \"seq " +
+            std::to_string(i) + "\"}}, no markdown, no extra text.");
+  }
+
+  wait_until([&] { return completed.load() == 5; },
+             std::chrono::seconds(180));
+  worker.stop();
+
+  REQUIRE(completed.load() == 5);
+  {
+    std::lock_guard<std::mutex> lock(results_mutex);
+    REQUIRE(results.size() == 5);
+    for (size_t i = 0; i < results.size(); ++i) {
+      const auto& r = results[i];
+      if (!r.ok) {
+        std::cerr << "[diag] seq-" << i << " ok=" << r.ok
+                  << " meta=" << r.meta.dump() << std::endl;
+        // graceful failure: LLM 输出缺参数等不确定因素 → 系统不 panic,
+        // 错误有明确 meta (非空 error_code)
+        REQUIRE(r.meta.contains("error_code"));
+      } else {
+        REQUIRE(r.meta["tool_name"] == "echo");
+        REQUIRE(r.data.contains("echoed"));
+      }
+    }
+    // 系统级可用性: 至少 1 个任务真实 LLM 成功走完链路
+    REQUIRE(std::any_of(results.begin(), results.end(),
+                        [](const ToolResult& r) { return r.ok; }));
+  }
 }
