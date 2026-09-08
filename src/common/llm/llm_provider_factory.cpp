@@ -7,6 +7,7 @@
 #include "common/llm/llm_config.h"          // LLMConfig
 #include "common/llm/llm_types.h"            // ILLMProvider
 #include "common/llm/mock_provider_factory.h"  // MockProviderFactory
+#include "common/llm/serializing_decorator.h"  // SerializingDecorator (Wave 1 #2: 多线程 SIGSEGV 修复)
 
 #include <stdexcept>
 
@@ -101,7 +102,15 @@ std::unique_ptr<ILLMProvider> LLMProviderFactory::create(const LLMConfig& config
   if (backend == "openai" || backend == "anthropic" || backend == "deepseek" ||
       backend == "minimax" || backend == "qwen" || backend == "moonshot" ||
       backend == "custom") {
-    return cloud_factory->create(config);
+    // Wave 1 #2 (fix-cloud-adapter-multithreading): cloud 路径注入 SerializingDecorator
+    // 修复 N≥2 worker 并发 + Authorization + https 三者同时触发的 SIGSEGV.
+    // factory 层注入, 调用方无感知 (返回类型仍为 unique_ptr<ILLMProvider>).
+    // mock / llama 路径不包装 — 零性能影响 (B.3/B.4 mock 测试不变).
+    // ⚠️ NOT redundant: 牺牲并发 LLM 调用换取零 SIGSEGV. 真根因修复 (OpenSSL 3.0
+    // + httplib 升级) 见 follow-up ADR-XXXX.
+    auto adapter = cloud_factory->create(config);
+    return std::make_unique<SerializingDecorator>(
+        std::move(adapter), "cloud-" + backend);
   }
   if (backend == "local" || backend == "llama") return llama_factory->create(config);
   return mock_factory->create(config);

@@ -93,6 +93,7 @@ add_library(agenticdsl_common STATIC
     src/common/llm/compliance_decorator.cpp     # Phase 5: ComplianceDecorator 合规日志 (REQ-IPD-003)
     src/common/llm/rate_limit_decorator.cpp     # Phase 5: RateLimitDecorator 配额限制 (REQ-IPD-004)
     src/common/llm/tracing_decorator.cpp        # Phase 6a: TracingDecorator 事件追踪 (ADR-0068 §决策 3)
+    src/common/llm/serializing_decorator.cpp    # Wave 1 #2: SerializingDecorator 修复 CloudLLMAdapter 多线程 SIGSEGV
     src/common/llm/orchestration_illm_provider.cpp  # Phase 5: Dual Consumer Model (REQ-ICC-001)
     src/common/prompts/v1.cpp                  # ADR-0074 D-3: V1 schema constraint builder
     src/common/prompts/v2.cpp                  # ADR-0074 D-3: V2 few-shot 注入 builder
