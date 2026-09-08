@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # scripts/check-model-default-cleared.sh
-# 功能描述: 静态契约守卫 — 验证 5 个 LLMParams 潜伏站点都调用了 params.model.clear()
+# 功能描述: 静态契约守卫 — 验证 8 个 LLMParams 潜伏站点都调用了 params.model.clear()
 #          防未来维护者误删修复 (AGENTS.md 模式 #1 test-driven bug discovery closed loop
 #          step #2 要求: clear() 看似冗余但绝非, 必须加注释 + 静态脚本兜底)
 # 设计依据: openspec/changes/fix-generation-request-model-default/tasks.md §2.6
 # 用法:
-#   ./scripts/check-model-default-cleared.sh                # 全部 5 站点必须找到
+#   ./scripts/check-model-default-cleared.sh                # 全部 8 站点必须找到
 #   ./scripts/check-model-default-cleared.sh --verbose       # 详细输出
 #   ./scripts/check-model-default-cleared.sh --strict-exit   # 找到 → exit 0, 漏 → exit 1
 # 退出码:
-#   0 = 全部 5 站点找到 params.model.clear() (默认)
+#   0 = 全部 8 站点找到 params.model.clear() (默认)
 #   1 = 漏站点或脚本本身错误 (--strict-exit)
 #
-# 维护原则: 每新增 GenerationRequest 构造站点须同步追加到此脚本 (5 → 6 → ...)
+# 维护原则: 每新增 GenerationRequest 构造站点须同步追加到此脚本 (5 → 6 → 7 → 8 → ...)
 
 set -uo pipefail
 
@@ -33,10 +33,12 @@ for arg in "$@"; do
   esac
 done
 
-# 7 个 LLMParams 潜伏站点
+# 8 个 LLMParams 潜伏站点
 #   Wave 1 #1 (fix-generation-request-model-default, 5 sites): oracle ses_f7f5ef175ffeGKhxXLfBJjzLVX 实证
 #   Wave 2 (plan-execute-loop-realllm, 2 sites): Phase 1 实施时发现 Oracle 漏掉的
 #     plan_execute_loop.h:208 (plan_phase) + :254 (verify_phase), 补 clear()
+#   Wave 2 ship-gate (Fix #3): simple_orchestrator.cpp:124 (Wave 1 #1 ship commit afc2d1b
+#     react_once 修复, 脚本漏加, Oracle ship-gate ses_f7cdf267bffeddRNuPpIcdOZd0 发现)
 # 格式: "file|search_pattern|min_count|anchor_pattern|description"
 #   - search_pattern: 主匹配 (params.model.clear())
 #   - min_count: 该文件内至少出现次数 (防双站点退化: node_executor.cpp 有 2 处 clear)
@@ -49,6 +51,7 @@ SITES=(
   "src/modules/cognitive/gepa_loop.cpp|request.params.model.clear()|1||GEPA reflection (was line 115)"
   "include/agenticdsl/pdk/agent_loops/plan_execute_loop.h|req.params.model.clear()|2|plan_phase|plan_phase LLM 生成 DSL (Wave 2 补加)"
   "include/agenticdsl/pdk/agent_loops/plan_execute_loop.h|req.params.model.clear()|2|verify_phase|verify_phase LLM 评估 yes/no (Wave 2 补加, 锚点二次确认防 plan_phase 单 clear 误删 verify_phase clear 不被拦截)"
+  "src/modules/cognitive/simple_orchestrator.cpp|req.params.model.clear()|1||SimpleCognitiveOrchestrator react_once (Wave 1 #1 ship commit afc2d1b, 脚本漏加 8th 站点补加)"
 )
 
 RED='\033[0;31m'
@@ -59,7 +62,7 @@ NC='\033[0m'
 missing=0
 total=${#SITES[@]}
 
-echo "=== Static contract check: params.model.clear() in 5 LLM shadow sites ==="
+echo "=== Static contract check: params.model.clear() in 8 LLM shadow sites ==="
 echo "Source: openspec/changes/fix-generation-request-model-default/tasks.md §2.6"
 echo
 
