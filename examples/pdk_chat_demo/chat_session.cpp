@@ -709,6 +709,10 @@ std::optional<InputMessage> ChatSession::try_peek_input() const {
     return std::nullopt;
 }
 
+bool ChatSession::is_input_thread_shutdown() const {
+    return impl_->stop_input_thread_.load(std::memory_order_acquire);
+}
+
 void ChatSession::Impl::input_thread_main() {
     std::string line;
     while (!stop_input_thread_.load(std::memory_order_acquire)) {

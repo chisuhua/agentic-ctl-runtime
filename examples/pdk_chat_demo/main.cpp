@@ -553,11 +553,18 @@ int main(int argc, char* argv[]) {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    while (auto msg = session.pop_next_input(std::chrono::milliseconds(500))) {
-        // §7.4: timeout → continue to re-check shutdown flag
-        // shutdown (nullopt on EOF) → break
+    while (true) {
+        // §7.4: distinguish timeout vs shutdown explicitly
         if (g_shutdown_requested.load(std::memory_order_acquire)) {
             break;
+        }
+        auto msg = session.pop_next_input(std::chrono::milliseconds(500));
+        if (!msg) {
+            // nullopt = timeout OR shutdown. Shutdown exits; timeout re-checks shutdown + retries.
+            if (session.is_input_thread_shutdown()) {
+                break;
+            }
+            continue;
         }
         const std::string& input = msg->text;
 

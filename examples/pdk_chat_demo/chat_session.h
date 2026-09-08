@@ -155,12 +155,15 @@ public:
     // try_pop_input: non-blocking priority pop (steering > follow-up); returns nullopt if both empty
     std::optional<InputMessage> try_pop_input();
 
-    // pop_next_input: blocking pop with timeout; returns nullopt on timeout or shutdown
+    // pop_next_input: blocking pop with timeout; returns nullopt on timeout OR shutdown
     std::optional<InputMessage> pop_next_input(std::chrono::milliseconds timeout);
 
     // try_peek_input: non-blocking peek at front (steering > follow-up); does NOT consume
     // (§NH1 fix: used by interrupt_thread to poll /cancel without losing the message)
     std::optional<InputMessage> try_peek_input() const;
+
+    // §7.4 fix: distinguish timeout vs shutdown (true after EOF / signal)
+    bool is_input_thread_shutdown() const;
 
     // === T1: Session 持久化 (design.md §Session 持久化) ===
     // 从磁盘加载 session (persist_dir/<id>.json)
