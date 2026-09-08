@@ -59,6 +59,11 @@ std::string ContextCompactorImpl::compact(const std::string& history_json,
                                          ILLMProvider& llm) {
   GenerationRequest req;
   req.prompt = std::string(kSummaryPromptPrefix) + history_json;
+  // ⚠️ NOT redundant: LLMParams = LLMConfig 别名, 默认 model = "gpt-4o-mini"
+  // (非空). 若不清空, CloudLLMAdapter L164 会拿默认遮蔽 factory 设置的真实
+  // model → server 拒绝. 摘要场景 (Phase G 真实 LLM 启用时) 会被卡住.
+  // 详见 openspec/changes/fix-generation-request-model-default/.
+  req.params.model.clear();
   try {
     Result<GenerationResult, LLMError> result =
         llm.generate(req, std::stop_token{});
