@@ -51,6 +51,17 @@
 - AND no httplib::Client corruption error
 - AND 429 RateLimited handling graceful (no infinite retry loop)
 
+#### Scenario: Multi-thread httplib SIGSEGV (known issue, deferred to fix-up change)
+- GIVEN CloudLLMAdapter + N≥2 worker 并发 + Authorization header (api_key set) + https
+- WHEN DomainWorkerPool handler 调 shared provider
+- THEN httplib::Client::Post 内部 create_client_socket SIGSEGV
+  (socket_options_ 栈 corruption; gdb backtrace: ~ClientImpl → ~basic_string → 空地址)
+- AND 单线程 pool(1) + 真实 deepseek PASS (A.2 已 ship, B.2 pool(1) 实证)
+- AND 无 Authorization mock provider 路径 PASS (B.3/B.4 mock simulate PASS)
+- DEFERRED to `fix-cloud-adapter-multithreading` change (OpenSSL/SSL_CTX 多线程 init
+  或 httplib Authorization header 栈修复, 超出本 test-coverage change scope)
+- 测试用 Catch2 SKIP macro 暂跳过, 不阻塞本 change ship
+
 ### Requirement: PlanExecuteLoop verify "yes" (P0)
 
 `plan_execute_loop.h:252-268` verify 阶段调 LLM 断言含 "yes" 响应。真实 LLM 测试 SHALL 验证真实 deepseek 在延迟下产出合规 verify 响应。

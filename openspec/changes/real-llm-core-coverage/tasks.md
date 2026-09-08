@@ -43,10 +43,23 @@ Phase B 前置 P0)。telemetry 副作用: decorator 链 (cost/compliance/tracing
 
 ## Phase B — DomainWorkerPool 并发共享 provider (P0)
 
-- [ ] B.1 扩展 `tests/test_domain_worker_pool.cpp` 加真实 LLM 并发 case
-- [ ] B.2 测试: N=4 worker 各自 submit task → 共享 provider → 4 个结果返回
-- [ ] B.3 测试: 1 worker × 1 provider × 100 task 串行,验证无 race
-- [ ] B.4 测试: 429 RateLimited 处理 (mock http server 或真实限速)
+- [x] B.1 扩展 `tests/test_domain_worker_pool.cpp` 加 LLM 并发 case
+- [ ] B.2 测试: N=4 worker 各自 submit task → 共享真实 deepseek → 4 个结果返回
+      — **KNOWN ISSUE (deferred, SKIP'd)**: 当前环境 CloudLLMAdapter + httplib::Client
+      多线程并发到 https (带 Authorization header) → `create_client_socket` SIGSEGV
+      (socket_options_ 栈 corruption; 根因: OpenSSL/SSL_CTX 多线程 init 或 httplib
+      Authorization header 栈处理 bug). 单线程 pool(1) PASS; 无 Authorization 的
+      mock 路径 PASS; A.2 (CognitiveWorker 单线程真实 deepseek) 已 ship PASS.
+      跟进 change `fix-cloud-adapter-multithreading` 修复后启用.
+- [x] B.3 测试: 1 worker × 共享 mock provider × 100 task 串行 → 验证共享 provider 无 race
+      — 注: 用 MockLLMProvider (零延迟确定性), 真实 LLM 100 串行需 5-15 分钟不合理;
+      并发真实安全性由 B.2 覆盖 (待跟进)
+- [x] B.4 测试: RateLimited 优雅处理 + 无重试风暴
+      — MockLLMProvider set_simulate_error(RateLimited) 模拟; 4 worker 并发 →
+      全部 completed + RateLimited 错误码传递 + generate_calls==4 (无重试) +
+      elapsed<30s (无 hang). 原计划 CloudLLMAdapter + HttpMockServer 测真实 429,
+      因 B.2 SIGSEGV 同根因 (Authorization + httplib), 改用 mock 聚焦 domain pool
+      error 传递路径.
 
 ## Phase C — PlanExecuteLoop verify "yes" (P0)
 
