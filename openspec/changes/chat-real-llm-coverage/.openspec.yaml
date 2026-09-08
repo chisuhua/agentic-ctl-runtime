@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-08
+goal: Ship production-quality test coverage that proves real LLM end-to-end
+  correctness, command paths, and dynamic subgraph generation

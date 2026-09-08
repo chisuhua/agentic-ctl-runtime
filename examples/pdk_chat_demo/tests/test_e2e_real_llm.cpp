@@ -1,12 +1,12 @@
 // tests/test_e2e_real_llm.cpp
 // pdk_chat_demo 真实 LLM 端到端集成测试 (DeepSeek 优先，回退 MINIMAX)
-// 需要 DEEPSEEK_API_KEY 或 MINIMAX_API_KEY 环境变量；未设置时自动跳过
 // 关联: docs/examples/pdk_chat_demo/DESIGN.md §8.1 "Real LLM"
 
 #include "catch_amalgamated.hpp"
 
 #include "chat_session.h"
 #include "event_handler.h"
+#include "test_helpers/real_llm_env.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -67,32 +67,14 @@ static std::string ptr_to_str(void* p) {
 }
 
 TEST_CASE("Real LLM: deepseek-v4-flash responds to a simple prompt", "[e2e][realllm]") {
-    const char* run_real_llm = std::getenv("HYDRAFORGE_RUN_REAL_LLM");
-    if (!run_real_llm || std::string(run_real_llm) != "1") {
-        WARN("Set HYDRAFORGE_RUN_REAL_LLM=1 to run real LLM tests");
-        return;
-    }
+    pdk_chat_demo::testing::require_real_llm_env();
 
-    std::string provider, model, api_url, api_endpoint, env_used;
-    const char* deepseek_key = std::getenv("DEEPSEEK_API_KEY");
-    if (deepseek_key && deepseek_key[0] != '\0') {
-        provider     = "deepseek";
-        model        = "deepseek-v4-flash";
-        api_url      = "https://api.deepseek.com";
-        api_endpoint = "/chat/completions";
-        env_used     = "DEEPSEEK_API_KEY";
-    } else {
-        const char* api_key = std::getenv("MINIMAX_API_KEY");
-        if (!api_key || api_key[0] == '\0') {
-            WARN("DEEPSEEK_API_KEY and MINIMAX_API_KEY both unset — skipping real LLM test");
-            return;
-        }
-        provider     = "minimax";
-        model        = "minimax-text-01";
-        api_url      = "https://api.minimax.chat";
-        api_endpoint = "/v1/chat/completions";
-        env_used     = "MINIMAX_API_KEY";
-    }
+    auto cfg = pdk_chat_demo::testing::real_llm_config();
+    const std::string& provider     = cfg.provider;
+    const std::string& model        = cfg.model;
+    const std::string& api_url      = cfg.api_url;
+    const std::string& api_endpoint = cfg.api_endpoint;
+    const std::string& env_used     = cfg.env_used;
     INFO("Using provider=" << provider << " model=" << model
          << " via " << env_used);
 
@@ -101,8 +83,7 @@ TEST_CASE("Real LLM: deepseek-v4-flash responds to a simple prompt", "[e2e][real
     llm_cfg.model        = model;
     llm_cfg.api_url      = api_url;
     llm_cfg.api_endpoint = api_endpoint;
-    llm_cfg.api_key      = (provider == "deepseek") ? deepseek_key
-                                                     : std::getenv("MINIMAX_API_KEY");
+    llm_cfg.api_key      = cfg.api_key;
     llm_cfg.max_tokens    = 512;
     llm_cfg.temperature   = 0.7f;
     llm_cfg.timeout_seconds = 30;
@@ -141,30 +122,13 @@ TEST_CASE("Real LLM: deepseek-v4-flash responds to a simple prompt", "[e2e][real
 }
 
 TEST_CASE("Real LLM: ChatSession with deepseek responds to user input", "[e2e][realllm][chat]") {
-    const char* run_real_llm = std::getenv("HYDRAFORGE_RUN_REAL_LLM");
-    if (!run_real_llm || std::string(run_real_llm) != "1") {
-        WARN("Set HYDRAFORGE_RUN_REAL_LLM=1 to run real LLM tests");
-        return;
-    }
+    pdk_chat_demo::testing::require_real_llm_env();
 
-    std::string provider, model, api_url, api_endpoint;
-    const char* deepseek_key = std::getenv("DEEPSEEK_API_KEY");
-    if (deepseek_key && deepseek_key[0] != '\0') {
-        provider     = "deepseek";
-        model        = "deepseek-v4-flash";
-        api_url      = "https://api.deepseek.com";
-        api_endpoint = "/chat/completions";
-    } else {
-        const char* api_key = std::getenv("MINIMAX_API_KEY");
-        if (!api_key || api_key[0] == '\0') {
-            WARN("DEEPSEEK_API_KEY and MINIMAX_API_KEY both unset — skipping real LLM ChatSession test");
-            return;
-        }
-        provider     = "minimax";
-        model        = "minimax-text-01";
-        api_url      = "https://api.minimax.chat";
-        api_endpoint = "/v1/chat/completions";
-    }
+    auto cfg = pdk_chat_demo::testing::real_llm_config();
+    const std::string& provider     = cfg.provider;
+    const std::string& model        = cfg.model;
+    const std::string& api_url      = cfg.api_url;
+    const std::string& api_endpoint = cfg.api_endpoint;
 
     setenv("HYDRAFORGE_LOOP_DIR", find_loop_dir().c_str(), 1);
 
@@ -182,8 +146,7 @@ TEST_CASE("Real LLM: ChatSession with deepseek responds to user input", "[e2e][r
     llm_cfg.model        = model;
     llm_cfg.api_url      = api_url;
     llm_cfg.api_endpoint = api_endpoint;
-    llm_cfg.api_key      = (provider == "deepseek") ? deepseek_key
-                                                     : std::getenv("MINIMAX_API_KEY");
+    llm_cfg.api_key      = cfg.api_key;
     llm_cfg.max_tokens    = 512;
     llm_cfg.temperature   = 0.7f;
     llm_cfg.timeout_seconds = 30;
