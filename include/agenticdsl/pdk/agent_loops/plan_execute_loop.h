@@ -214,6 +214,15 @@ class PlanExecuteLoop {
         "Goal: " + goal +
         "\nContext: " + ctx.dump().dump() +
         "\nGenerate AgenticDSL markdown for /main subgraph:";
+    // ⚠️ NOT redundant: LLMParams = LLMConfig 别名, 默认 model = "gpt-4o-mini"
+    // (非空). 若不清空, CloudLLMAdapter::build_request_body L164
+    // (req.params.model.empty() ? config_.model : req.params.model) 会拿默认
+    // "gpt-4o-mini" 遮蔽 adapter 构造时 factory 设置的真实 model
+    // (如 deepseek-v4-flash) → deepseek server 拒绝
+    // ("you passed gpt-4o-mini"). 站点无 model 概念 (model 由 adapter/factory 持有),
+    // 清空让 adapter fallback.
+    // 详见 openspec/changes/fix-generation-request-model-default/ + plan-execute-loop-realllm/.
+    req.params.model.clear();
     auto gen_result = llm->generate(req, token);
     if (!gen_result.has_value()) {
       return std::nullopt;
@@ -265,6 +274,9 @@ class PlanExecuteLoop {
         "Goal: " + goal +
         "\nResult: " + data_dump +
         "\nVerify success: answer 'yes' or 'no':";
+    // ⚠️ NOT redundant: 与 plan_phase 同理 (LLMParams 默认 model 遮蔽 adapter
+    // config_.model), 详见 plan_phase 上方注释 + openspec/changes/fix-generation-request-model-default/.
+    req.params.model.clear();
     auto gen_result = llm->generate(req, token);
     if (!gen_result.has_value()) {
       return false;
