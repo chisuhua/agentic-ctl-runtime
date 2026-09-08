@@ -152,6 +152,82 @@ HydraForge/
 - **禁止** 空 catch 块 `catch(e) {}`
 - **禁止** 删除失败的测试来"通过"
 
+## ENGINEERING PATTERNS (real-llm-core-coverage 沉淀)
+
+**沉淀时间**: 2026-09-08, **来源**: real-llm-core-coverage Phase 0+A+B ship + Oracle 审查 (`SHIPPED: afc2d1b / 117850c / c0cb522`).
+**目的**: 把真实 LLM 测试驱动实施中验证过的模式集中记录, 避免后续 Phase C-G 重复踩坑.
+**设计原则**: 每条模式配"反模式"对照, 说明什么情境下**不适用**, 防止过度泛化.
+
+### 决策层 (Decision)
+
+#### 1. 测试驱动发现生产 bug 的标准闭环
+
+**触发**: 真实 LLM 测试 FAIL 且根因不在 LLM 输出 (server 报 "you passed X" 等显式错误).
+
+**闭环 4 步**:
+1. **诊断定位** — 用 `std::cerr` 打印 captured payload (不要依赖 Catch2 INFO — 并行测试中 INFO 输出可能被吞, 见模式 #5), 精确定位失败帧.
+2. **最小修复** — 单点最小变更 (例: `req.params.model.clear()` 一行), 不动架构. 但必须加注释解释"为何这行不是多余的" (未来维护者会误删).
+3. **回归守卫** — 加不依赖真实 API key 的 **Recording Provider** 单测 (实现 `ILLMProvider` 三虚, generate 记录 req/payload, 返回固定 JSON), CI skip 下也能拦截回归.
+4. **系统性记录** — 列出**所有同类潜伏站点** (grep `GenerationRequest` 默认构造点), 开跟进 change, 避免"逐 phase 红一遍".
+
+**反模式**: 只修一处测试不修系统性 → Phase E/G 必然复现 → 浪费时间.
+
+#### 2. 系统性问题的"触发升级"模式
+
+适用于"一类潜伏问题" (例: `LLMParams` 默认 model 遮蔽 5+ 站点). **不要主观判断** "预感很重要", 定义**量化升级门槛**:
+- 例: `fix-generation-request-model-default` 升级条件 = "Phase B-G 暴露 ≥3 站点" → 升为 Phase B 前置 P0.
+- 升级条件写在 change 的 tasks.md `## 升级触发` 章节, 达到时直接决策, 避免争论.
+
+**反模式**: "以后遇到再修" → 永远遇到, 永远没时间.
+
+#### 3. 真实 LLM 测试断言强度分层
+
+匹配**测试目的**分层, 不要一刀切:
+- **契约验证** (例: A.2 单调用模型名) → 严格 1/1 → flake 是有效信号 (说明契约破了).
+- **系统鲁棒性** (例: A.4 5 串行) → 宽松 `≥1 ok + 其余优雅 error + error_message 非空` → 反映 LLM 真实不可控.
+- **能力断言** (例: B.4 RateLimited) → 严格 `code == RateLimited` (LLMProvider 层映射是确定的, 与 LLM 输出无关).
+
+**反模式**: 5 个测试都用 `REQUIRE(ok)` → 4/5 flake = 不可用; 或都用 `≥1 ok` → 强契约被弱化.
+
+#### 4. OpenSpec Change 的 SHIP-with-fixes 流程 (Oracle 介入)
+
+**适用**: 跨 ≥3 个文件 / 涉及生产代码修改 / OpenSpec spec 决策需复核的 change.
+
+**流程**:
+1. **作者自审** (Single-Dev 模式) → commit baseline.
+2. **派 Oracle 审查** (后台) → 收集 SHIP / SHIP-with-fixes / BLOCK 结论 + 修正清单 (按严重度排序).
+3. **按清单修正** → 不 amend baseline, **新增独立 commit** (原子性, 回溯能力).
+4. **派 Oracle 复核** (续同 session 失败则新开) → 拿 APPROVE 才能 ship.
+
+**反模式**: 
+- 不派 Oracle 直接 ship 大 change → 高风险, 一旦发现 bug 需拆 commit.
+- 派 Oracle 后一次性修正 + amend → 失去原子性, 无法回溯"原始 ship 时状态".
+
+### 治理层 (Governance)
+
+#### 5. 跨多树相同测试目标的 helper 双维护策略
+
+**触发**: 一个 helper 在 examples 树 (sibling change) 已 ship, core 树也需同能力.
+
+**策略**:
+- 项目级 helper 放 `tests/test_helpers/<name>.h` (namespace `agenticdsl::test`), 与 `http_mock_server.h` 一致.
+- pdk 副本**保留**为内联副本 ("frozen"), 不修改已 ship sibling 文件.
+- 项目级 self-test 独立覆盖相同 4 cases, 验证 API 一致.
+- 漂移风险由 duplicated self-test 兜底. 漂移严重时 (≥3 处 API 分歧) 再考虑公共头.
+
+**反模式**: 删 sibling helper 只留项目级 → 破坏 sibling 已 ship 测试 + 失去 frozen reference.
+
+### 工程层 (Engineering)
+
+> 工程层模式沉淀在 `tests/AGENTS.md` (测试目录专属) + `src/common/llm/AGENTS.md` (LLM 模块专属).
+
+### 沉淀源 (Provenance)
+
+- **2026-09-08**: Oracle session `ses_f7f5ef175ffeGKhxXLfBJjzLVX` 审查 + `ses_f330bb6ffehvveECRPGKbPF7` 复核, 模式 1/2/4 直接产出.
+- **2026-09-08**: Phase B SIGSEGV 调试 (gdb + 消除实验) 沉淀模式 3 (断言分层) + 异常隔离 §NOTES 扩展.
+- **2026-08-04**: chat-real-llm-coverage ship 沉淀 `helper 三态分离` (模式工程层).
+- **2026-07-22**: skill-interpreter-real-loading 沉淀 `Recording Provider 守卫` 模式.
+
 ## BUILD SYSTEM
 - CMake 3.20+，C++20
 - 根 `CMakeLists.txt` 聚合 10 个模块静态库 → `agenticdsl_core`
