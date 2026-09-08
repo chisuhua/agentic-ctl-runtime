@@ -113,6 +113,12 @@ GEPALoop::ReflectionResult GEPALoop::reflect_and_commit(
     }
 
     GenerationRequest request("Reflect on failed execution " + failed_trace.trace_id);
+    // ⚠️ NOT redundant: LLMParams = LLMConfig 别名, 默认 model = "gpt-4o-mini"
+    // (非空). GenerationRequest(prompt) ctor 不显式设 params, 同样继承默认.
+    // 若不清空, CloudLLMAdapter L164 会拿默认遮蔽 factory 设置的真实 model
+    // → GEPA 反射真实 LLM 失败. 清空让 adapter fallback.
+    // 详见 openspec/changes/fix-generation-request-model-default/.
+    request.params.model.clear();
     const auto generated = llm_->generate(request, std::stop_token{});
     if (!generated.has_value()) {
       result.failure_mode = "reflection_generation_failed";
