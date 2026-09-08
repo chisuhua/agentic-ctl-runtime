@@ -126,6 +126,46 @@ TEST_CASE("compact catches LLM exceptions and returns empty") {
   REQUIRE(result.empty());
 }
 
+// ============================================================
+// fix-generation-request-model-default regression guard (Oracle P1-1)
+// 验证 ContextCompactor::compact 必须传空 params.model 给 provider
+// (让 CloudLLMAdapter L164 正确 fallback config_.model).
+// 若未来有人删掉 context_compactor.cpp:66 的 req.params.model.clear(),
+// LLMParams 默认 "gpt-4o-mini" 会再次遮蔽真实 model — 本测试确定性拦截.
+// ============================================================
+class RecordingLLMProvider_Compact : public ILLMProvider {
+ public:
+  std::string last_model;
+  int generate_calls = 0;
+
+  Result<GenerationResult, LLMError>
+      generate(const GenerationRequest& req, std::stop_token) override {
+    last_model = req.params.model;
+    ++generate_calls;
+    GenerationResult gr;
+    gr.text = "[SUMMARY_OK]";
+    gr.completion_tokens = 5;
+    return Result<GenerationResult, LLMError>::success(std::move(gr));
+  }
+  std::unique_ptr<IGenerationStream>
+      generate_stream(const GenerationRequest&, std::stop_token) override {
+    return nullptr;
+  }
+  std::vector<ModelInfo> available_models() const override {
+    return {ModelInfo{"mock", {}, 0, "mock"}};
+  }
+};
+
+TEST_CASE("ContextCompactor compact passes empty model to provider",
+          "[context_compactor][realllm-guard]") {
+  RecordingLLMProvider_Compact recorder;
+  ContextCompactorImpl compactor(4096, nullptr, nullptr);
+  std::string result = compactor.compact("history to summarize", recorder);
+  REQUIRE(recorder.generate_calls == 1);
+  REQUIRE(recorder.last_model.empty());  // 核心契约: model 必须为空 → adapter fallback
+  REQUIRE(result == "[SUMMARY_OK]");
+}
+
 // ADR-0068: EventBuilder V2 for context.compact events
 TEST_CASE("on_compact_before uses EventBuilder with args+meta (ADR-0068)") {
   auto bus = std::make_shared<test::MockBus>();
