@@ -68,6 +68,81 @@ TEST_CASE("pop_next_input returns promptly when input thread shutdown (EOF)",
     REQUIRE(elapsed < 100ms);
 }
 
+TEST_CASE("§7.4 regression: timeout returns nullopt WITHOUT shutdown (no input thread)",
+          "[chat_session][consumer][regression][7.4]") {
+    // Regression guard for the main-loop bug fixed in commit a759db6.
+    // enable_input_thread = false → no input thread → stop_input_thread_ stays false.
+    // pop_next_input(timeout) on empty queue must return nullopt WITHOUT shutdown signal,
+    // so the main loop's `if (is_input_thread_shutdown()) break` won't fire.
+    SessionConfig session_cfg;
+    session_cfg.enable_input_thread = false;
+    ChatSession session(nullptr, nullptr, nullptr, {}, session_cfg);
+
+    REQUIRE_FALSE(session.is_input_thread_shutdown());
+
+    // Empty: no message, no shutdown
+    auto start = std::chrono::steady_clock::now();
+    auto msg1 = session.pop_next_input(50ms);
+    auto elapsed1 = std::chrono::steady_clock::now() - start;
+    REQUIRE_FALSE(msg1.has_value());
+    REQUIRE(elapsed1 >= 50ms);  // waited full timeout
+    REQUIRE_FALSE(session.is_input_thread_shutdown());  // CRITICAL: still alive
+
+    // Push + pop proves session is alive
+    session.try_push_follow_up_for_test("alive-check");
+    auto msg2 = session.pop_next_input(50ms);
+    REQUIRE(msg2.has_value());
+    REQUIRE(msg2->text == "alive-check");
+    REQUIRE_FALSE(session.is_input_thread_shutdown());
+}
+
+TEST_CASE("multi-round interaction: 5 messages processed sequentially, session stays alive",
+          "[chat_session][consumer][multi_round]") {
+    SessionConfig session_cfg;
+    session_cfg.enable_input_thread = false;
+    ChatSession session(nullptr, nullptr, nullptr, {}, session_cfg);
+
+    const std::vector<std::string> inputs = {
+        "hi", "what can you do?", "tell me a joke", "thanks", "exit",
+    };
+
+    for (const auto& input : inputs) {
+        session.try_push_follow_up_for_test(input);
+        auto msg = session.pop_next_input(100ms);
+        REQUIRE(msg.has_value());
+        REQUIRE(msg->kind == QueueKind::FollowUp);
+        REQUIRE(msg->text == input);
+        REQUIRE_FALSE(session.is_input_thread_shutdown());  // still alive after each round
+    }
+
+    // After draining all: next pop is timeout, NOT shutdown
+    auto empty = session.pop_next_input(50ms);
+    REQUIRE_FALSE(empty.has_value());
+    REQUIRE_FALSE(session.is_input_thread_shutdown());
+
+    // Multi-round steering interleaved with follow-up (priority order: steering first)
+    session.try_push_follow_up_for_test("follow-up-1");
+    session.try_push_steering_for_test("/cancel");
+    session.try_push_follow_up_for_test("follow-up-2");
+
+    auto m1 = session.try_pop_input();
+    REQUIRE(m1.has_value());
+    REQUIRE(m1->kind == QueueKind::Steering);  // steering priority
+    REQUIRE(m1->text == "/cancel");
+
+    auto m2 = session.try_pop_input();
+    REQUIRE(m2.has_value());
+    REQUIRE(m2->kind == QueueKind::FollowUp);
+    REQUIRE(m2->text == "follow-up-1");
+
+    auto m3 = session.try_pop_input();
+    REQUIRE(m3.has_value());
+    REQUIRE(m3->kind == QueueKind::FollowUp);
+    REQUIRE(m3->text == "follow-up-2");
+
+    REQUIRE_FALSE(session.is_input_thread_shutdown());
+}
+
 TEST_CASE("pop_next_input timeout returns nullopt", "[chat_session][consumer][timeout]") {
     CinEofGuard eof;
     ChatSession session(nullptr, nullptr, nullptr, {}, {});
