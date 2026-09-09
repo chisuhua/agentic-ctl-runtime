@@ -14,7 +14,7 @@
 
 #### Scenario: CostTrackingDecorator real LLM charge success
 - GIVEN real deepseek configured
-- AND CostTrackingDecorator 构造 (provider + MockBudget + "deepseek-v4-flash" + max_tokens_estimate=500)
+- AND CostTrackingDecorator 构造 (2 参 ctor: provider + MockBudget, 模型名经 req.params.model 透传)
 - WHEN `decorator.generate(req, {})` 返回 success (含 prompt_tokens + completion_tokens)
 - THEN `MockBudget.call_count == 1`
 - AND `MockBudget.last_tokens > 0`
@@ -27,7 +27,7 @@
 
 #### Scenario: 100-token prompt real LLM charge exact match
 - GIVEN real deepseek configured
-- AND prompt 为 100 char (≈ 25 token)
+- AND prompt 为 100 char (真实 LLM 自行估算 token 数)
 - WHEN `decorator.generate(req, {})` 返回 success
 - THEN `MockBudget.call_count == 1`
 - AND `MockBudget.last_tokens == result.value().prompt_tokens + result.value().completion_tokens` (exact match)
@@ -35,15 +35,16 @@
 
 ### Requirement: streaming 路径 TrackingStream 析构兜底 SHALL charge budget
 
-`CostTrackingDecorator::decorate_generate_stream` 返回的 `TrackingStream` SHALL 在析构时 (无论 next() 是否 poll 过 nullopt) 触发 `budget_->record_llm_call(max_tokens_estimate_, model_name_)`, 兜底保证 budget 无遗漏.
+`CostTrackingDecorator::decorate_generate_stream` 返回的 `TrackingStream` SHALL 在析构时 (poll 完至少 1 chunk 后 unique_ptr 离开 scope) 触发 `budget_->record_llm_call(req.params.max_tokens, model_name_)`, 兜底保证 budget 无遗漏.
 
 #### Scenario: CostTrackingDecorator streaming real LLM destructor fallback
 - GIVEN real deepseek configured
-- AND 模拟调用方提前析构 (unique_ptr scope 内不 poll next)
+- AND req.params.max_tokens = 2048 (LLMConfig 默认值, 自文档化)
+- AND 模拟调用方 poll 至少 1 chunk 后 unique_ptr 析构
 - WHEN `stream` 析构触发 `TrackingStream::~TrackingStream`
 - THEN `MockBudget.call_count == 1`
-- AND `MockBudget.last_tokens > 0`
-- AND `MockBudget.last_tokens <= max_tokens_estimate_` (兜底合理性)
+- AND `MockBudget.last_tokens == req.params.max_tokens` (= 2048, 析构兜底确定性)
+- AND `stream != nullptr` 验证 CloudLLMAdapter generate_stream 契约 (永不返回 nullptr)
 
 ### Requirement: scope 边界 (Out of Scope)
 
