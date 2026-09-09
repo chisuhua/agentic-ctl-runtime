@@ -319,6 +319,8 @@ TEST_CASE("YieldNode NEXT mode cancelled stop_token returns gracefully",
     REQUIRE(result["__yield_mode__"] == "NEXT");
     // 关键: provider 已被调用 (证明 token 透传至 generate_stream)
     REQUIRE(provider_raw->call_count() == 1);
-    // mock 在 token 取消时 next() 返回 nullopt → YieldNode NEXT 取首 chunk → 字符串可能空
-    // 注: __yield__ 字段可能缺失 (next() 返回 nullopt), 不 REQUIRE
+    // P2 (Oracle SHIP-with-fixes 判别力修复): bridge{token} 后 pre-cancel → mock 流
+    // next() 检测 stop_requested 返回 nullopt → __yield__ 为空串 (而非 "never").
+    // 此断言为回归守卫: 旧桥接 bridge{} 路径会得 "never", 新桥接 bridge{token} 得 "".
+    REQUIRE(result["__yield__"] == "");
 }

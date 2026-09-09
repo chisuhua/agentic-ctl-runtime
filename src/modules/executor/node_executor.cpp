@@ -572,7 +572,7 @@ Context NodeExecutor::execute_yield(const YieldNode* node, const Context& ctx, B
         return ctx;  // 静默跳过 (避免无 LLM provider 时崩溃, 保持向后兼容)
     }
 
-    YieldStreamBridge bridge{};
+    YieldStreamBridge bridge{token};  // P1: 透传外部 token 至 pull_single/pull_loop (YieldStreamBridge::pull_xxx → stream.next(stop_token_) → mock next() 检测 stop_requested)
 
     switch (node->mode) {
         case YieldMode::STOP: {
