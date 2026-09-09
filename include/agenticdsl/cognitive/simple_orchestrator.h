@@ -65,7 +65,8 @@ class SimpleCognitiveOrchestrator {
    * 异常安全：不抛任何异常至调用方（内部 std::exception 被捕获并包装）。
    */
   void process(const std::string& session_id,
-               std::function<void(ToolResult)> on_complete);
+               std::function<void(ToolResult)> on_complete,
+               std::stop_token token = {});
 
  private:
   IToolRegistry* registry_;  // P1.T2: 依赖倒置 (从 ToolRegistry* 改为 IToolRegistry*)
@@ -76,7 +77,8 @@ class SimpleCognitiveOrchestrator {
    * @param user_prompt 用户提示（MVP：硬编码 "demo-session" 等价文本）
    * @return ToolResult（成功或失败均通过 ToolResult 表达）
    */
-  ToolResult react_once(const std::string& user_prompt);
+  ToolResult react_once(const std::string& user_prompt,
+                       std::stop_token token = {});
 };
 
 } // namespace agenticdsl

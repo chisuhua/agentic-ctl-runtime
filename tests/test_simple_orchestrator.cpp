@@ -30,11 +30,13 @@ class RecordingLLMProvider : public ILLMProvider {
  public:
   std::string last_model;
   int generate_calls = 0;
+  bool last_token_stop_requested = false;  // fix-orchestrator-token-passthrough
   GenerationResult result;
 
   Result<GenerationResult, LLMError> generate(
-      const GenerationRequest& req, std::stop_token) override {
+      const GenerationRequest& req, std::stop_token token) override {
     last_model = req.params.model;
+    last_token_stop_requested = token.stop_requested();
     ++generate_calls;
     return Result<GenerationResult, LLMError>::success(result);
   }
@@ -233,4 +235,44 @@ TEST_CASE("SimpleCognitiveOrchestrator passes empty model to provider",
   REQUIRE(captured.ok);
   REQUIRE(raw->generate_calls == 1);
   REQUIRE(raw->last_model.empty());  // 核心契约: model 必须为空 → adapter fallback
+}
+
+// === Test 7 (fix-orchestrator-token-passthrough): stop_token 透传至 llm_->generate ===
+// react_once 必须把外部 stop_token 透传至 provider.generate (替换硬编码 {})。
+// 回归守卫: RecordingLLMProvider 记录 last_token_stop_requested, 未来若有人回退
+// token → {} 路径, pre-cancel 测试中 last_token_stop_requested 会变成 false → 拦截。
+TEST_CASE("SimpleCognitiveOrchestrator forwards stop_token to LLM provider",
+          "[cognitive][token][realllm-gap-fix]") {
+  auto engine = DSLEngine::from_markdown(kEmptyDsl);
+  engine->register_tool(
+      "echo",
+      agenticdsl::ToolMetadata{"echo", "test", "test",
+                               agenticdsl::ToolCategory::ReadOnly,
+                               agenticdsl::LayerProfile::Workflow},
+      [](const std::unordered_map<std::string, std::string>& args) {
+        return nlohmann::json{{"echoed", args.at("message")}};
+      });
+  auto recorder = std::make_unique<RecordingLLMProvider>();
+  recorder->result.text = R"({"tool":"echo","args":{"message":"ok"}})";
+  auto* raw = recorder.get();
+  engine->set_llm_provider(std::move(recorder));
+
+  SimpleCognitiveOrchestrator orch(&engine->get_tool_registry(),
+                                   engine->get_llm_provider());
+
+  // pre-cancel: 验证 token 透传 (非默认 token={}).
+  // 原 react_once(token={}) 路径 → raw->last_token_stop_requested == false.
+  // 新 react_once(token) 路径 → raw->last_token_stop_requested == true.
+  std::stop_source ss;
+  ss.request_stop();
+  bool done = false;
+  ToolResult captured;
+  orch.process("s7", [&](ToolResult r) {
+    captured = std::move(r);
+    done = true;
+  }, ss.get_token());
+
+  REQUIRE(done);
+  REQUIRE(raw->generate_calls == 1);
+  REQUIRE(raw->last_token_stop_requested == true);  // 核心契约: pre-cancel 已透传
 }

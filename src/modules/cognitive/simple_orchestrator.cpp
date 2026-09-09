@@ -75,7 +75,8 @@ SimpleCognitiveOrchestrator::SimpleCognitiveOrchestrator(
 
 void SimpleCognitiveOrchestrator::process(
     const std::string& session_id,
-    std::function<void(ToolResult)> on_complete) {
+    std::function<void(ToolResult)> on_complete,
+    std::stop_token token) {
   // 1) 前置检查：依赖缺失
   if (!registry_ || !llm_) {
     if (on_complete) {
@@ -88,7 +89,7 @@ void SimpleCognitiveOrchestrator::process(
 
   // 2) 调用 react_once 并捕获所有异常
   try {
-    ToolResult result = react_once(session_id);
+    ToolResult result = react_once(session_id, token);
     if (on_complete) on_complete(result);
   } catch (const std::exception& e) {
     if (on_complete) {
@@ -104,7 +105,7 @@ void SimpleCognitiveOrchestrator::process(
   }
 }
 
-ToolResult SimpleCognitiveOrchestrator::react_once(const std::string& user_prompt) {
+ToolResult SimpleCognitiveOrchestrator::react_once(const std::string& user_prompt, std::stop_token token) {
   // 1) 构造 prompt（MVP 硬编码）
   // @internal: 多轮循环由 CognitiveWorker 在上层管理；prompt 模板已迁移至 llm_config.json
   const std::string tool_list = "echo"; // MVP：仅 echo 工具
@@ -122,7 +123,7 @@ ToolResult SimpleCognitiveOrchestrator::react_once(const std::string& user_promp
   // orchestrator 无 model 概念, 清空让 adapter fallback 到 config_.model。
   // 实测: sibling test_e2e_real_llm 显式设 req.params.model 才成功, 佐证此遮蔽 bug。
   req.params.model.clear();
-  auto result = llm_->generate(req, {});
+  auto result = llm_->generate(req, token);
   if (!result.has_value()) {
     return ToolResult::error(
         llm_error_to_error_code(result.error().code),
