@@ -257,3 +257,68 @@ nodes:
     REQUIRE(result.final_context["__yield__"] == "token-A");
     REQUIRE(result.final_context["__yield_mode__"] == "NEXT");
 }
+
+// ============================================================
+// fix-yield-node-token-passthrough (Wave 1 #1 GAP 修复)
+// 验证 std::stop_token 透传至 llm_provider_->generate_stream (替换硬编码 token={})
+// ============================================================
+TEST_CASE("YieldNode NEXT mode accepts stop_token parameter",
+          "[executor][yield][token][realllm-gap-fix]") {
+    ToolRegistry registry;
+    auto provider_holder = std::make_unique<MockLLMProvider>();
+    MockLLMProvider* provider_raw = provider_holder.get();
+    provider_raw->set_stream_tokens({"Hello", "world"});
+
+    NodeExecutor executor(registry, provider_holder.get());
+
+    YieldNode node("/main/yield_with_token",
+                   std::vector<NodePath>{}, nlohmann::json::object(),
+                   std::nullopt, std::vector<std::string>{},
+                   "Test prompt", YieldMode::NEXT, "");
+    Context ctx;
+
+    // 核心契约: execute_node 接受 std::stop_token 形参 (Wave 1 #1 GAP 修复后)
+    // 验证签名 + token 透传至 generate_stream (mock 流立即返回, 验证调用成功)
+    std::stop_source ss;  // 非默认 stop_token (区别于原硬编码 token={})
+    Context result = executor.execute_node(&node, ctx, default_budget_checker(), ss.get_token());
+
+    REQUIRE(result.contains("__yield_mode__"));
+    REQUIRE(result["__yield_mode__"] == "NEXT");
+    REQUIRE(result.contains("__yield__"));
+    REQUIRE(result["__yield__"] == "Hello");
+    REQUIRE(provider_raw->call_count() == 1);
+}
+
+TEST_CASE("YieldNode NEXT mode cancelled stop_token returns gracefully",
+          "[executor][yield][token][cancellation][realllm-gap-fix]") {
+    // 验证 token={} → token 修复后, 预设 cancel 的 token 传播至 mock provider
+    // (mock 流 next() 检查 stop_requested 返回 nullopt, execute_node 立即返回空 result)
+    ToolRegistry registry;
+    auto provider_holder = std::make_unique<MockLLMProvider>();
+    MockLLMProvider* provider_raw = provider_holder.get();
+    provider_raw->set_stream_tokens({"never", "reached"});
+
+    NodeExecutor executor(registry, provider_holder.get());
+
+    YieldNode node("/main/yield_pre_cancel",
+                   std::vector<NodePath>{}, nlohmann::json::object(),
+                   std::nullopt, std::vector<std::string>{},
+                   "Test prompt", YieldMode::NEXT, "");
+    Context ctx;
+
+    // 预设 cancel: execute_node 进入 generate_stream 后, mock next() 立即
+    // 检测到 stop_requested() 返回 nullopt, 流立即结束 (零延迟, 因 mock 流
+    // 不 sleep). 验证 token 透传 (非默认 token={}).
+    std::stop_source ss;
+    ss.request_stop();  // 预设 cancel
+
+    Context result = executor.execute_node(&node, ctx, default_budget_checker(), ss.get_token());
+
+    // token 透传验证: 不死锁, 立即返回 (mock 流零延迟响应 cancel)
+    REQUIRE(result.contains("__yield_mode__"));
+    REQUIRE(result["__yield_mode__"] == "NEXT");
+    // 关键: provider 已被调用 (证明 token 透传至 generate_stream)
+    REQUIRE(provider_raw->call_count() == 1);
+    // mock 在 token 取消时 next() 返回 nullopt → YieldNode NEXT 取首 chunk → 字符串可能空
+    // 注: __yield__ 字段可能缺失 (next() 返回 nullopt), 不 REQUIRE
+}

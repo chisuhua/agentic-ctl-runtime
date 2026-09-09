@@ -43,7 +43,8 @@ NodeExecutor::NodeExecutor(IToolRegistry& tool_registry, ILLMProvider* llm_provi
       parser_(std::move(parser)), bus_(bus), session_(nullptr) {}
 
 
-Context NodeExecutor::execute_node(Node* node, const Context& ctx, BudgetChecker budget_checker) {
+Context NodeExecutor::execute_node(Node* node, const Context& ctx, BudgetChecker budget_checker,
+                                   std::stop_token token) {
     Context context_with_resources = ctx;
 
     check_permissions(node->permissions, node->path);
@@ -69,7 +70,7 @@ Context NodeExecutor::execute_node(Node* node, const Context& ctx, BudgetChecker
         case NodeType::ASSERT:
             return execute_assert(dynamic_cast<const AssertNode*>(node), context_with_resources);
         case NodeType::YIELD:
-            return execute_yield(dynamic_cast<const YieldNode*>(node), context_with_resources, budget_checker);
+            return execute_yield(dynamic_cast<const YieldNode*>(node), context_with_resources, budget_checker, token);
         default:
             throw std::runtime_error("Unknown node type during execution: " + std::to_string(static_cast<int>(node->type)));
     }
@@ -555,7 +556,8 @@ void NodeExecutor::process_output_keys(Context& new_context,
 // C12 Phase 5 Stage 1 Step 2 §3: YIELD/STREAM 节点执行 (NEXT/CONTINUE/STOP 三模式)
 // 设计依据: IP-001 §Step 2 + Oracle Q3 决议 + spec.md `yield-execution-mode-support`
 // 注意: pending_yield_ 状态由 ExecutionSession::execute_node 调用方维护 (避免 executor→scheduler 链接循环)
-Context NodeExecutor::execute_yield(const YieldNode* node, const Context& ctx, BudgetChecker budget_checker) {
+Context NodeExecutor::execute_yield(const YieldNode* node, const Context& ctx, BudgetChecker budget_checker,
+                                    std::stop_token token) {
     Context new_context = ctx;
 
     std::string rendered;
@@ -585,11 +587,11 @@ Context NodeExecutor::execute_yield(const YieldNode* node, const Context& ctx, B
             // ⚠️ NOT redundant: LLMParams = LLMConfig 别名, 默认 model = "gpt-4o-mini"
             // (非空). 若不清空, CloudLLMAdapter L164 会拿默认遮蔽 factory 配置的真实
             // model → server 拒绝. 站点无 model 概念, 清空让 adapter fallback.
-            // 注: token={} 属 fix-yield-node-token-passthrough scope (独立 follow-up),
-            // 本 change 仅修 model 契约.
             // 详见 openspec/changes/fix-generation-request-model-default/.
             req.params.model.clear();
-            auto stream = llm_provider_->generate_stream(req, std::stop_token{});
+            // fix-yield-node-token-passthrough ship 后: token 透传至 generate_stream,
+            // 外部 cancel 可中断流式 LLM 调用 (Wave 1 #1 commit 5dc4569 标注的 GAP 修复).
+            auto stream = llm_provider_->generate_stream(req, token);
             if (!stream) {
                 new_context["__yield_error__"] = "null_stream";
                 return new_context;
