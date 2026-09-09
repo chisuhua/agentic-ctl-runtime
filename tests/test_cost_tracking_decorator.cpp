@@ -7,6 +7,7 @@
 #include "common/llm/mock_provider.h"
 #include "modules/budget/budget_controller.h"
 #include "core/types/node.h"
+#include "test_helpers/real_llm_env.h"  // Phase D 真实 LLM helper (顶 include, 工程卫生)
 
 #include <catch_amalgamated.hpp>
 #include <memory>
@@ -201,8 +202,6 @@ TEST_CASE("CostTrackingDecorator charges when stream never consumed",
 // 设计依据: openspec/changes/cost-tracking-decorator-realllm/design.md
 // =====================================================================
 
-#include "test_helpers/real_llm_env.h"  // Phase D 真实 LLM helper
-
 // === D.2: decorated generate → completion_tokens > 0 → budget 扣费 > 0 ===
 TEST_CASE("CostTrackingDecorator real LLM charge success",
           "[decorator][cost][realllm][phase-d][d2]") {
@@ -260,6 +259,10 @@ TEST_CASE("CostTrackingDecorator 100-token prompt real LLM charge exact",
 }
 
 // === D.4: streaming 路径 TrackingStream 析构兜底计费 ===
+// 注: CostTrackingDecorator ctor (provider, budget) 2 参, 不接受 max_tokens_estimate.
+// req.params.max_tokens 默认 2048 (LLMConfig), 经 decorate_generate_stream 传入
+// TrackingStream. CloudLLMAdapter::generate_stream 永不返回 nullptr (错误时返回
+// error body 流), 析构兜底必然触发: call_count == 1, last_tokens == req.params.max_tokens.
 TEST_CASE("CostTrackingDecorator streaming real LLM destructor fallback",
           "[decorator][cost][realllm][phase-d][d4]") {
   agenticdsl::test::require_real_llm_env();
@@ -267,10 +270,6 @@ TEST_CASE("CostTrackingDecorator streaming real LLM destructor fallback",
     SUCCEED("skipped: HYDRAFORGE_SKIP_REAL_LLM=1 (no API key or CI skip)");
     return;
   }
-  // 本地有 key 时: 真实 deepseek generate_stream → unique_ptr scope 内不 poll next → 析构
-  // 触发 TrackingStream::~TrackingStream 兜底 budget_->record_llm_call
-  // (注: CostTrackingDecorator ctor (provider, budget) 无 max_tokens_estimate 参数,
-  //  析构兜底用 max_tokens=0 短路 — D.4 改为验证 TrackingStream next() nullopt 时计费)
   auto provider = agenticdsl::test::real_llm_provider();
   auto budget = std::make_shared<MockBudget>();
   CostTrackingDecorator d(std::move(provider), budget);
@@ -278,20 +277,17 @@ TEST_CASE("CostTrackingDecorator streaming real LLM destructor fallback",
   GenerationRequest req;
   req.prompt = "Stream 3 tokens";
   req.params.model.clear();
+  req.params.max_tokens = 2048;  // 显式设值 (LLMConfig 默认值, 自文档化)
 
   std::optional<std::string> first_chunk;
   {
     auto stream = d.generate_stream(req, {});
-    if (stream) {
-      // poll next() 直到 nullopt (流结束触发 budget 扣费)
-      // 注: TrackingStream 设计 (cost_tracking_decorator.cpp:75) 要求 poll nullopt
-      //    才 record_llm_call, 提前析构因 max_tokens_estimate=0 兜底短路
-      first_chunk = stream->next({});
-    }
+    REQUIRE(stream != nullptr);  // CloudLLMAdapter generate_stream 永不返回 nullptr
+    first_chunk = stream->next({});  // poll 1 chunk (验证流实际可用)
   }
-  // 流结束或 stream null (real LLM 异常) 路径均允许 budget 扣费 0 或 1
-  REQUIRE(budget->call_count.load() <= 1);
-  if (budget->call_count.load() == 1) {
-    REQUIRE(budget->last_tokens.load() >= 0);
-  }
+  // 析构兜底 (TrackingStream::~TrackingStream) 必然触发 (max_tokens > 0)
+  REQUIRE(budget->call_count.load() == 1);
+  REQUIRE(budget->last_tokens.load() == req.params.max_tokens);  // 2048
+  // first_chunk 真实 LLM 必有内容 (cloud adapter 流式至少返回 1 chunk)
+  // 注: deepseek 流式响应可能首 chunk 为空 (chunk 边界), 不 REQUIRE first_chunk.has_value()
 }
