@@ -108,6 +108,12 @@
 - THEN 12 cases 全部 PASS
 - AND 0 TSan warnings（跨 Worker bus dispatch + parent_trace 透传链路零 race）
 
+#### Scenario 注脚: A→B→C 链式因果正确性覆盖范围
+- ADR-0037 §验证标准"因果链正确性"原文要求"A→B→C 链式任务,验证 parent_trace 传递正确"
+- 本 Requirement (T8) 跨 Worker 验证仅覆盖 **A→B 因果传播链路**（Worker A emit → Worker B 收到 parent_trace 触发）
+- **A→B→C 链式因果的传递性** 由 Requirement 1 (T6) Scenario "传递性（调用方链式推导）" 通过纯函数合成 BusEvent 链式调用验证（a.payload.trace_id/b.payload.parent_trace/b.payload.trace_id/c.payload.parent_trace 三跳链接）
+- 不增加跨 Worker A→B→C case 的理由: 链路同构（A→B 已验证 A→X 透传；A→B→C 只需 b→c 一次同样透传），传递性由纯函数判定函数本身承担；测试冗余度低，省 1h 估时
+
 ### Requirement: 回归守卫
 
 现有 228/228 ctest baseline SHALL 保持全绿。本 change 新增 12 cases (`test_causal_ordering` + `test_cognitive_worker` +1 + `test_domain_worker_pool` +1)，总计 240/240 ctest PASS。

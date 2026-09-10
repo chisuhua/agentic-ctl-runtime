@@ -118,7 +118,7 @@ void submit_task(DomainTask task);  // 已是 struct 入参, 仅加字段
 
 **Single-dev 流程**:
 - 按 `docs/adr/adr-self-review-checklist.md` 12 项清单自审
-- 24h cooling-off
+- **不强制** 24h cooling-off（5 atomic commits 独立可验证 + Oracle 复核 = 等价 cooling-off 机制；single-dev 模式下作者自审 + Oracle 续 session APPROVE 已 substitute cooling-off 目的）
 - Ship 后 ADR-0037 🟡 Partial 状态保持（分布式向量时钟仍 defer — 转 ✅ 需 EventBus 落地）
 
 ## Non-goals
@@ -163,4 +163,4 @@ void submit_task(DomainTask task);  // 已是 struct 入参, 仅加字段
 - `submit_task(parent_trace)` 必须用默认参数 + `std::optional` 保持调用方零迁移
 - `parent_trace` 进 ToolResult 后保持与 `trace_id` 相同的 meta 承载方式（不进 `meta`，而是顶层字段 — 仿 trace_id）
 - TSan preset 必须跑（跨 Worker 测试易出 race）
-- 单 session 内可完成，无需 24h cooling-off 拆分（独立可验证 commit）
+- 单 session 内可完成，无需 24h cooling-off 拆分（5 atomic commits 独立可验证 + Oracle 复核 = 等价 cooling-off 机制；与 Impact §Single-dev 流程 段一致）

@@ -43,9 +43,12 @@
 
 ### 3.1 Worker 接口改造
 
+- [ ] 3.1.0 `include/agenticdsl/contract/event_builder.h` — 新增 `.parent_trace(std::string)` setter（仿 `.trace_id()` line 80-84 模式：直接 `payload_.parent_trace = std::move(tid)`；用于 `cognitive.task.started` 走无 ToolResult 构造路径时透传 parent_trace 至顶层字段）
 - [ ] 3.1.1 `include/agenticdsl/cognitive/cognitive_worker.h` — `submit_task` 加第 3 参数 `std::optional<std::string> parent_trace = std::nullopt`
 - [ ] 3.1.2 `src/modules/cognitive/cognitive_worker.cpp` — `submit_task` 实现体存入 `task_contexts_[task_id].parent_trace`
-- [ ] 3.1.3 `src/modules/cognitive/cognitive_worker.cpp` — `worker_loop` 中发射 `started/completed` 事件时，将 `parent_trace` 写入 `payload.meta.parent_trace` 或顶层字段（保持与既有 trace_id 字段语义一致）
+- [ ] 3.1.3 `src/modules/cognitive/cognitive_worker.cpp` — `worker_loop` 中发射 `started/completed` 事件时，将 `parent_trace` 写入 `payload.parent_trace`（**顶层 ToolResult 字段**，与既有 `trace_id` 同模式 — per design Decision 5）：
+  - 走 ToolResult 构造路径的 emit: 直接设 `payload.parent_trace = parent_trace`
+  - 走 EventBuilder(topic, [args/meta]).build() 路径的 emit (e.g. `cognitive.task.started`): 用新 `.parent_trace()` setter (per 3.1.0)
 
 ### 3.2 测试扩展
 
@@ -91,12 +94,14 @@
 - [ ] 6.1.4 commit 4: `feat(causal-ordering): propagate parent_trace through DomainWorkerPool` (Step 4)
 - [ ] 6.1.5 commit 5: `test(causal-ordering): cross-worker integration + TSan verification` (Step 5)
 
-### 6.2 文档同步
+### 6.2 文档同步（并入 commit 5，与 T8 测试同期 ship — 避免单独 6th commit）
 
 - [ ] 6.2.1 `docs/adr/adr-0037-causal-ordering-impl-scope.md` 更新: T2 余量 / T4 / T5 / T6 / T7 / T8 ✅ shipped (已 ship 部分保持 ✅)
 - [ ] 6.2.2 ADR-0037 状态 🟡 Partial 保持 (分布式向量时钟仍 defer — 转 ✅ 条件 per impl-scope)
 - [ ] 6.2.3 `docs/active-status.md` §一 Approved 计数不动 + §四 顺延项追加 "ADR-0037 T2/T4-T8 完成" 行
 - [ ] 6.2.4 `tools/adr_relationships.py` 重跑生成 relationships.md
+
+> **归属说明**: 文档同步作为 commit 5 (`test(causal-ordering): cross-worker integration + TSan verification`) 的一部分同期 ship。理由: 文档是对代码实现的描述（impl-scope audit 表 + active-status 状态行），不应晚于实现单独 ship。验证 gates (6.3.*) 仍按 6.1 顺序逐 commit 跑。
 
 ### 6.3 归档
 
@@ -134,7 +139,7 @@
 | 6 | Ship + ADR sync + archive | 1h |
 | **总计** | | **18h** |
 
-**单 session 内可完成** (1.5-2 工作日)。无需 24h cooling-off 拆分 (5 commits 独立可验证)。
+**单 session 内可完成** (1.5-2 工作日)。无需 24h cooling-off 拆分 (5 commits 独立可验证 + Oracle 复核 = 等价 cooling-off 机制；与 proposal.md §Impact Single-dev 流程 段一致)。
 
 ## 关联
 
