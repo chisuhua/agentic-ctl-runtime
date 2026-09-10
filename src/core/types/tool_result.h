@@ -55,6 +55,11 @@ enum class ErrorCode {
   // (schema_validate / coercion / required_field / business_rules 全部映射到本值)
   // 对应 JSON-RPC -32602 (Invalid params)
   InvalidParams,       // 工具入参校验失败 (schema 类型不匹配 / 必填字段缺失 / 危险模式)
+
+  // P4 新增 (fix-cancel-errorcode-semantics, 2026-09-10)
+  // LLM 消费侧 stop_token 触发的取消. 与 Abort (终止整个流程) 区分.
+  // llm_error_to_error_code 将 LLMError::Code::Cancelled 映射到本值.
+  Cancelled,           // 操作被外部 stop_token 取消
 };
 
 // 工具执行结果的标准信封 (MVP + P2-P4 扩展)

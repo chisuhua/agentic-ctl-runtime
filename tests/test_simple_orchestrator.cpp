@@ -31,6 +31,7 @@ class RecordingLLMProvider : public ILLMProvider {
   std::string last_model;
   int generate_calls = 0;
   bool last_token_stop_requested = false;  // fix-orchestrator-token-passthrough
+  bool simulate_cancellation = false;  // fix-cancel-errorcode-semantics
   GenerationResult result;
 
   Result<GenerationResult, LLMError> generate(
@@ -38,6 +39,10 @@ class RecordingLLMProvider : public ILLMProvider {
     last_model = req.params.model;
     last_token_stop_requested = token.stop_requested();
     ++generate_calls;
+    if (simulate_cancellation) {
+      return Result<GenerationResult, LLMError>::failure(
+          LLMError{LLMError::Code::Cancelled, "simulated cancel"});
+    }
     return Result<GenerationResult, LLMError>::success(result);
   }
 
@@ -275,4 +280,42 @@ TEST_CASE("SimpleCognitiveOrchestrator forwards stop_token to LLM provider",
   REQUIRE(done);
   REQUIRE(raw->generate_calls == 1);
   REQUIRE(raw->last_token_stop_requested == true);  // 核心契约: pre-cancel 已透传
+}
+
+// === Test 8 (fix-cancel-errorcode-semantics): LLMError::Cancelled 映射到 ErrorCode::Cancelled ===
+// RecordingLLMProvider.simulate_cancellation=true 触发 LLMError{Code::Cancelled}.
+// orch.process 调用 llm_->generate 后, llm_error_to_error_code 必须返回 ErrorCode::Cancelled
+// (而非 ErrorCode::Unknown). ToolResult.error_code 应等于 ErrorCode::Cancelled.
+// 回归守卫: 未来回退 llm_error_to_error_code 的 Cancelled case → error_code 变 Unknown → 拦截.
+TEST_CASE("LLMError::Cancelled maps to ErrorCode::Cancelled",
+          "[cognitive][error-code][cancel][realllm-followup]") {
+  auto engine = DSLEngine::from_markdown(kEmptyDsl);
+  engine->register_tool(
+      "echo",
+      agenticdsl::ToolMetadata{"echo", "test", "test",
+                               agenticdsl::ToolCategory::ReadOnly,
+                               agenticdsl::LayerProfile::Workflow},
+      [](const std::unordered_map<std::string, std::string>& args) {
+        return nlohmann::json{{"echoed", args.at("message")}};
+      });
+  auto recorder = std::make_unique<RecordingLLMProvider>();
+  recorder->simulate_cancellation = true;  // 触发 Cancelled 错误
+  auto* raw = recorder.get();
+  engine->set_llm_provider(std::move(recorder));
+
+  SimpleCognitiveOrchestrator orch(&engine->get_tool_registry(),
+                                   engine->get_llm_provider());
+
+  bool done = false;
+  ToolResult captured;
+  orch.process("s8", [&](ToolResult r) {
+    captured = std::move(r);
+    done = true;
+  });
+
+  REQUIRE(done);
+  REQUIRE_FALSE(captured.ok);
+  REQUIRE(raw->generate_calls == 1);
+  // 核心契约: Cancelled 错误映射到 ErrorCode::Cancelled, 而非 ErrorCode::Unknown
+  REQUIRE(captured.error_code == ErrorCode::Cancelled);
 }

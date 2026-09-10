@@ -34,6 +34,7 @@ ErrorCode llm_error_to_error_code(LLMError::Code code) {
     case LLMError::Code::ContextOverflow:
       return ErrorCode::ResourceExhausted;
     case LLMError::Code::Cancelled:
+      return ErrorCode::Cancelled;  // fix-cancel-errorcode-semantics: 取消语义独立表达
     case LLMError::Code::InvalidRequest:
     case LLMError::Code::Unknown:
       return ErrorCode::Unknown;

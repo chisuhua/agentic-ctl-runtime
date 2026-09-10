@@ -37,6 +37,7 @@ const char* error_code_to_string(ErrorCode code) {
     case ErrorCode::UnsupportedPlatform: return "UnsupportedPlatform";
     case ErrorCode::InvalidArg:          return "InvalidArg";
     case ErrorCode::InvalidParams:       return "InvalidParams";
+    case ErrorCode::Cancelled:           return "Cancelled";
   }
   return "Unknown";  // 编译器要求
 }
@@ -60,7 +61,8 @@ ErrorCode string_to_error_code(const std::string& s) {
   if (s == "BudgetExhausted")    return ErrorCode::BudgetExhausted;
   if (s == "UnsupportedPlatform") return ErrorCode::UnsupportedPlatform;
   if (s == "InvalidArg")         return ErrorCode::InvalidArg;
-  if (s == "InvalidParams")      return ErrorCode::InvalidParams;
+if (s == "InvalidParams")       return ErrorCode::InvalidParams;
+  if (s == "Cancelled")           return ErrorCode::Cancelled;
   return ErrorCode::Unknown;
 }
 
