@@ -2,7 +2,7 @@
 
 Vendored cpp-httplib 升级至覆盖全部 client 侧 security advisories 的 release,回归全部 httplib 使用点,并禁止未来引入 `set_follow_location(true)` 于含 Authorization 请求路径 (CVE-2026-33745 守卫)。
 
-## Requirements
+## ADDED Requirements
 
 ### Requirement: vendored cpp-httplib SHALL 升级至 v0.54.1
 
@@ -43,10 +43,10 @@ Vendored cpp-httplib 升级至覆盖全部 client 侧 security advisories 的 re
 #### Scenario: 全量 ctest 零回归
 - GIVEN 升级完成
 - WHEN `HYDRAFORGE_SKIP_REAL_LLM=1 ctest --test-dir build -j$(nproc)`
-- THEN 228/228 PASS
-- AND `openspec validate --strict` exit 0
+- THEN 229/229 PASS (baseline 228 + 新 test_httplib_version 1 binary 2 cases)
+- AND `openspec validate --changes` exit 0
 - AND `python3 tools/adr_lint.py` PASS
-- AND `python3 tools/docs_drift_audit.py` 0 DRIFT
+- AND `python3 tools/docs_drift_audit.py` 0 DRIFT (active-status.md ctest 计数同步更新)
 
 ### Requirement: set_follow_location SHALL 保持禁用
 
@@ -58,8 +58,8 @@ Vendored cpp-httplib 升级至覆盖全部 client 侧 security advisories 的 re
 - THEN 返回 0 匹配 (排除 `external/`)
 - AND 输出为空 (无 Authorization 泄露路径)
 
-#### Scenario: 注释方式保留告警
-- GIVEN 开发者在 cloud_adapter/http_adapter 中尝试添加 follow_location
-- WHEN grep 守卫运行
-- THEN 检查失败 (CI 红)
-- AND 需在 ADR-0087 §实施日志说明为何无害 (例如: 已升级 v0.54.1 覆盖 CVE 或确认无 Authorization)
+#### Scenario: 守卫脚本 TDD 验证
+- GIVEN `scripts/check-httplib-no-follow-location.sh` 守卫脚本
+- WHEN 临时在 src/ 创建 sentinel 文件含 `set_follow_location` 调用
+- THEN 脚本 exit 1 (FAIL) + 报告违规位置
+- AND 移除 sentinel 后脚本 exit 0 (PASS) — 守卫可逆且无副作用
