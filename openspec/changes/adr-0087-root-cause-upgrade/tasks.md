@@ -39,14 +39,22 @@
 - [x] 3.5 (verify) 全量 ctest 229/229 PASS 零回归
   - **Commit:** `b97fdf8` ship 时验证 (baseline 228 + 新 test_httplib_version 1 = 229)
 
-## 4. 移除默认 SerializingDecorator (Sprint 27) 🚧 IN PROGRESS
+## 4. 移除默认 SerializingDecorator (Sprint 27) ✅ SHIPPED
 
 - [x] 4.1 LLMProviderFactory::create(config, opts) cloud 路径默认不注入 SerializingDecorator
+  - **Commit:** `de79309 feat(llm): ADR-0087 Step 4 — cloud 路径默认无 SerializingDecorator (OPT-IN 降级)`
   - **变更:** `src/common/llm/llm_provider_factory.{h,cpp}` 新增 `CreateOptions` struct + 2 参 create 重载; 1 参 create 委托 2 参 (向后兼容); cloud 路径 `if (opts.serializer)` 才包装 SerializingDecorator
 - [x] 4.2 opts.serializer = true 启用 OPT-IN 路径 (诊断 + 紧急降级)
   - **测试:** `tests/test_llm_provider_factory_decorator.cpp` 7 cases (4 default 无包装 + 3 OPT-IN 路径)
-- [ ] 4.3 验证 Phase B/E/G 现有测试零回归
-- [ ] 4.4 (verify) 全量 ctest 230/230 (含 1 pre-existing cognitive_worker fail) 零新增回归
+  - **stderr warning:** `src/common/llm/llm_provider_factory.cpp` opts.serializer=true 时打印 warning (per design.md Risk mitigation)
+- [x] 4.3 验证 Phase B/E/G 现有测试零回归
+  - **test_cloud_adapter_multithread (Phase B B.2)**: PASS 12.56s (8 worker × 20 task real deepseek, root cause fix 验证)
+  - **test_skill_interpreter (Phase E)**: PASS
+  - **test_context_compactor (Phase G)**: PASS
+- [x] 4.4 (verify) 全量 ctest 230/230 + 1 pre-existing cognitive_worker fail 零新增回归
+  - **Oracle SHIP-with-fixes 修正 commit:** `9d6d6a6 fix(adr-0087-step4): Oracle SHIP-with-fixes 修正 (5 项, de79309 后续)`
+  - **Oracle session:** `ses_f738bec89ffeFMay5d3VIiXJGd` SHIP-with-fixes verdict
+  - **验证:** openspec validate --strict PASS / adr_lint 68 ADR PASS / docs_drift_audit 0 DRIFT / check-model-default-cleared 8/8 OK
 
 ## 5. Benchmark + OPT-IN 文档 (Sprint 28) ⏸ PENDING
 
