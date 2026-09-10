@@ -239,3 +239,19 @@ TEST_CASE("ToolResult from_json ignores invalid latency_ms type",
   REQUIRE(r.ok == true);
   REQUIRE_FALSE(r.latency_ms.has_value());  // 类型不匹配, 忽略
 }
+
+// === Test (fix-cancel-errorcode-semantics P3): ErrorCode::Cancelled round-trip ===
+// ToolResult::to_json / from_json 对 ErrorCode::Cancelled 必须双向对称 (透过
+// error_code_to_string + string_to_error_code 实现, 测试公共 API 验证即可).
+// 回归守卫: 未来 string 映射漂移 (例如 typo "Canceled" 或漏掉 case) → 测试拦截.
+TEST_CASE("ErrorCode::Cancelled string round-trip",
+          "[tool_result][cancel][realllm-followup]") {
+  auto r = ToolResult::error(ErrorCode::Cancelled, "user cancelled");
+  auto j = r.to_json();
+  auto roundtripped = ToolResult::from_json(j);
+  REQUIRE(roundtripped.ok == false);
+  REQUIRE(roundtripped.error_code.has_value());
+  REQUIRE(roundtripped.error_code.value() == ErrorCode::Cancelled);
+  // meta.error_message 字段保留 ("user cancelled")
+  REQUIRE(roundtripped.meta.value("error_message", "") == "user cancelled");
+}
