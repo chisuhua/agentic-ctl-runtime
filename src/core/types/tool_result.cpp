@@ -109,6 +109,10 @@ nlohmann::json ToolResult::to_json() const {
   if (trace_id.has_value()) {
     j["trace_id"] = *trace_id;
   }
+  // ADR-0037 L2 因果链: parent_trace (causal-ordering-completion)
+  if (parent_trace.has_value()) {
+    j["parent_trace"] = *parent_trace;
+  }
   if (metadata.has_value()) {
     j["metadata"] = *metadata;
   }
@@ -140,6 +144,10 @@ ToolResult ToolResult::from_json(const nlohmann::json& j) {
     // P3: trace_id (string)
     if (j.contains("trace_id") && j["trace_id"].is_string()) {
       r.trace_id = j["trace_id"].get<std::string>();
+    }
+    // ADR-0037 L2 因果链: parent_trace (string, 缺值容错)
+    if (j.contains("parent_trace") && j["parent_trace"].is_string()) {
+      r.parent_trace = j["parent_trace"].get<std::string>();
     }
     // P3: metadata (json, 任意类型)
     if (j.contains("metadata")) {

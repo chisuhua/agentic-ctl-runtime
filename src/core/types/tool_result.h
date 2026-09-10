@@ -88,6 +88,11 @@ struct ToolResult {
   // REQ-TR-003: trace_id (P3) — 跨会话追踪 ID, 透传到 IInteractionBus
   std::optional<std::string> trace_id;
 
+  // ADR-0037 L2 因果链: parent_trace (P3+, causal-ordering-completion 2026-09-10)
+  // 显式声明当前事件的"父任务" trace_id; consumer 用 causal_order() 判定因果关系.
+  // 与 trace_id 同模式: std::optional<string>, 顶层 JSON 字段 "parent_trace".
+  std::optional<std::string> parent_trace;
+
   // REQ-TR-004: metadata (P3) — 与 meta 共存, 扩展元数据
   std::optional<nlohmann::json> metadata;
 
