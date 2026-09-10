@@ -4,23 +4,23 @@
 
 `agenticdsl::event::causal_order(const BusEvent& a, const BusEvent& b)` SHALL 返回两个事件之间的因果关系，按 L2 → L1 → 默认优先级判定：
 
-1. **L2 优先**: 若 `a.trace_id` 等于 `b.parent_trace` → `CausalRelation::ABeforeB`；反向同理
+1. **L2 优先**: 若 `a.payload.trace_id` 等于 `b.payload.parent_trace` → `CausalRelation::ABeforeB`；反向同理（`trace_id`/`parent_trace` 是 ToolResult 字段，在 `BusEvent.payload` 内）
 2. **L1 回退**: 若两者 `causal_time` 都非 0 → `causal_time` 小者先
 3. **默认**: 否则 → `CausalRelation::Concurrent`
 
 判定函数 SHALL 仅判 1-hop 直接因果（ADR-0037 line 538 注明），传递性由调用方链式推导。
 
 #### Scenario: L2 显式因果链匹配
-- WHEN `BusEvent a` 的 `trace_id == "task-A-123"`
-- AND `BusEvent b` 的 `parent_trace == "task-A-123"`
+- WHEN `BusEvent a` 的 `payload.trace_id == "task-A-123"`
+- AND `BusEvent b` 的 `payload.parent_trace == "task-A-123"`
 - THEN `causal_order(a, b) == CausalRelation::ABeforeB`
 - AND `happens_before(a, b) == true`
 - AND `happens_before(b, a) == false`
 
 #### Scenario: L1 causal_time 回退
-- WHEN `a.causal_time == 10` AND `a.parent_trace` 为空
-- AND `b.causal_time == 20` AND `b.parent_trace` 为空
-- AND `a.trace_id == "x"` AND `b.trace_id == "y"`（无 L2 匹配）
+- WHEN `a.causal_time == 10` AND `a.payload.parent_trace` 为空
+- AND `b.causal_time == 20` AND `b.payload.parent_trace` 为空
+- AND `a.payload.trace_id == "x"` AND `b.payload.trace_id == "y"`（无 L2 匹配）
 - THEN `causal_order(a, b) == CausalRelation::ABeforeB`
 
 #### Scenario: L1 causal_time 反向
@@ -35,14 +35,14 @@
 - AND 不触发"L1 回退"误判为 ABeforeB
 
 #### Scenario: 同 trace_id 无 parent_trace
-- WHEN `a.trace_id == b.trace_id == "task-X"`（重复事件）
-- AND `a.parent_trace == std::nullopt` AND `b.parent_trace == std::nullopt`
+- WHEN `a.payload.trace_id == b.payload.trace_id == "task-X"`（重复事件）
+- AND `a.payload.parent_trace == std::nullopt` AND `b.payload.parent_trace == std::nullopt`
 - THEN `causal_order(a, b) == CausalRelation::Concurrent`
 
 #### Scenario: 传递性（调用方链式推导）
-- WHEN 构造 `a.trace_id = "A"`, `b.parent_trace = "A"`, `b.trace_id = "B"`, `c.parent_trace = "B"`
+- WHEN 构造 `a.payload.trace_id = "A"`, `b.payload.parent_trace = "A"`, `b.payload.trace_id = "B"`, `c.payload.parent_trace = "B"`
 - THEN `causal_order(a, b) == ABeforeB` AND `causal_order(b, c) == ABeforeB`
-- AND 调用方手动链式推导: `causal_order(a, c) == ABeforeB`（当 c.parent_trace != a.trace_id 时需经 b 中介）
+- AND 调用方手动链式推导: `causal_order(a, c) == ABeforeB`（当 c.payload.parent_trace != a.payload.trace_id 时需经 b 中介）
 
 ### Requirement: ToolResult parent_trace 字段 + 序列化 (T2 余量)
 
@@ -60,7 +60,7 @@
 
 ### Requirement: CognitiveWorker parent_trace 透传 (T4)
 
-`CognitiveWorker::submit_task(task_id, prompt, parent_trace = std::nullopt)` SHALL 接受 `std::optional<std::string>` 默认参数。Worker 在发射事件时 SHALL 将 `parent_trace` 透传到事件 `payload.trace_id` 关联的因果上下文（meta 或独立字段，由实现选）。
+`CognitiveWorker::submit_task(task_id, prompt, parent_trace = std::nullopt)` SHALL 接受 `std::optional<std::string>` 默认参数。Worker 在发射事件时 SHALL 将 `parent_trace` 透传到事件 `payload.parent_trace`（**顶层 ToolResult 字段**，与既有 `trace_id` 同模式 — per design Decision 5）。
 
 #### Scenario: 默认参数零迁移
 - WHEN 现有调用方调用 `submit_task("task-1", "prompt")`（2 参数旧形式）
