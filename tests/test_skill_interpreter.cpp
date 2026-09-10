@@ -251,6 +251,74 @@ TEST_CASE("7.8b pre-cancelled stop_token triggers immediate SIGKILL",
     cleanup_file(skill);
 }
 
+// === Test 7.8d (fix-skill-interpreter-dispatch-llm-token): llm_generate IPC token 透传 ===
+// 子进程发 llm_generate IPC → 父进程 dispatch_llm_generate → llm_->generate.
+// RecordingLLMProvider 跟踪 last_token_stop_possible 验证外部 stop_token
+// 是否透传至 llm_->generate, 替换原硬编码 std::stop_token{}.
+// 区分机制: ss.get_token() 构造的 stop_token stop_possible() == true;
+//            std::stop_token{} 默认构造 stop_possible() == false.
+// 回归守卫: 未来回退 dispatch_llm_generate 中 token 形参 (硬编码 {})
+//          → last_token_stop_possible == false → 测试拦截.
+namespace {
+class RecordingLLMProvider : public ILLMProvider {
+ public:
+  std::string last_model;
+  int generate_calls = 0;
+  bool last_token_stop_possible = false;
+  GenerationResult result;
+
+  Result<GenerationResult, LLMError> generate(
+      const GenerationRequest& req, std::stop_token token) override {
+    last_model = req.params.model;
+    last_token_stop_possible = token.stop_possible();
+    ++generate_calls;
+    return Result<GenerationResult, LLMError>::success(result);
+  }
+
+  std::unique_ptr<IGenerationStream> generate_stream(
+      const GenerationRequest&, std::stop_token) override {
+    return nullptr;
+  }
+
+  std::vector<ModelInfo> available_models() const override { return {}; }
+};
+}  // namespace
+
+TEST_CASE("7.8d dispatch_llm_generate forwards external stop_token to LLM",
+          "[skill_interpreter][token][llm_generate][realllm-followup]") {
+    MockToolRegistry tools;
+    test::MockBus bus;
+    auto recorder = std::make_unique<RecordingLLMProvider>();
+    recorder->result.text = "ok";
+    auto* raw = recorder.get();
+    SkillInterpreter interpreter(tools, bus, raw, nullptr);
+
+    std::string skill = create_temp_skill(
+        "---\n"
+        "name: llm-token-test\n"
+        "version: 0.1\n"
+        "description: test llm_generate token forwarding\n"
+        "---\n"
+        "llm_generate({\"prompt\": \"hi\"})\n");
+    REQUIRE(!skill.empty());
+
+    SkillCapability cap;
+    cap.allow_llm = true;
+    cap.max_steps = 10;
+    cap.timeout_ms = std::chrono::milliseconds(30000);
+
+    // ss.get_token() 构造的 token stop_possible() == true.
+    // 旧硬编码 std::stop_token{} stop_possible() == false. 区分关键.
+    std::stop_source ss;
+    auto result = interpreter.run(skill, cap, ss.get_token());
+
+    // 核心契约: token 已透传至 llm_->generate (而非硬编码 {})
+    REQUIRE(raw->generate_calls == 1);
+    REQUIRE(raw->last_token_stop_possible == true);
+
+    cleanup_file(skill);
+}
+
 // === Test 7.8c (fix-skill-interpreter-token-and-timeout P1): mid-run cancel ===
 // 另一线程在子进程阻塞期间 request_stop(). 验证 poll timeout clamp (≤100ms)
 // 使 cancel 在 200ms 内被检测, 不等满 cap.timeout_ms = 30s.

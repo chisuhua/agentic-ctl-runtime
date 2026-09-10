@@ -502,7 +502,7 @@ class SkillInterpreter::Impl {
         }
 
         // dispatch
-        IPCResponse resp = dispatch(req, cap, pid);
+        IPCResponse resp = dispatch(req, cap, pid, token);
         if (!write_line(pipe_in_w, serialize(resp))) {
           // 写失败 → 子进程 pipe 已关闭
           break;
@@ -600,13 +600,13 @@ class SkillInterpreter::Impl {
   }
 
   IPCResponse dispatch(const IPCRequest& req, const SkillCapability& cap,
-                       pid_t pid) {
+                       pid_t pid, std::stop_token token = {}) {
     if (req.method == "call_tool") {
       return dispatch_call_tool(req, cap, pid);
     } else if (req.method == "emit_event") {
       return dispatch_emit_event(req, cap);
     } else if (req.method == "llm_generate") {
-      return dispatch_llm_generate(req, cap);
+      return dispatch_llm_generate(req, cap, token);  // fix-skill-interpreter-dispatch-llm-token: token 透传
     } else if (req.method == "consume_budget") {
       return dispatch_consume_budget(req, cap, pid);
     } else if (req.method == "return") {
@@ -666,7 +666,8 @@ class SkillInterpreter::Impl {
   }
 
   IPCResponse dispatch_llm_generate(const IPCRequest& req,
-                                     const SkillCapability& cap) {
+                                     const SkillCapability& cap,
+                                     std::stop_token token = {}) {
     if (!cap.allow_llm || !llm_) {
       return IPCResponse{false, nullptr, "llm_generate not allowed"};
     }
@@ -683,7 +684,7 @@ class SkillInterpreter::Impl {
       // server 拒绝 "you passed gpt-4o-mini"). 清空让 adapter fallback.
       // 详见 openspec/changes/fix-generation-request-model-default/.
       gen_req.params.model.clear();
-      auto result = llm_->generate(gen_req, std::stop_token{});
+      auto result = llm_->generate(gen_req, token);  // fix-skill-interpreter-dispatch-llm-token: 替换硬编码 {} 为外部 token
       if (result.has_value()) {
         return IPCResponse{true, {{"content", result.value().text}}};
       } else {
