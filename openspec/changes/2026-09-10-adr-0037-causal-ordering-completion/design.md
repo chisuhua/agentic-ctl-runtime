@@ -59,11 +59,12 @@ ADR-0037 (🔍 Proposed → 🟡 Partial 2026-07-27) 三层因果机制:
 **选择** (per ADR §4.1):
 ```cpp
 CausalRelation causal_order(const BusEvent& a, const BusEvent& b) {
-    // L2 优先: trace_id == parent_trace 匹配
-    if (a.trace_id.has_value() && b.parent_trace.has_value() &&
-        *a.trace_id == *b.parent_trace) return CausalRelation::ABeforeB;
-    if (b.trace_id.has_value() && a.parent_trace.has_value() &&
-        *b.trace_id == *a.parent_trace) return CausalRelation::BBeforeA;
+    // BusEvent.trace_id / parent_trace 不存在顶层字段 — 全部在 payload (ToolResult) 内
+    // L2 优先: payload.trace_id == payload.parent_trace 匹配
+    if (a.payload.trace_id.has_value() && b.payload.parent_trace.has_value() &&
+        *a.payload.trace_id == *b.payload.parent_trace) return CausalRelation::ABeforeB;
+    if (b.payload.trace_id.has_value() && a.payload.parent_trace.has_value() &&
+        *b.payload.trace_id == *a.payload.parent_trace) return CausalRelation::BBeforeA;
 
     // L1 回退: causal_time 比较
     if (a.causal_time != 0 && b.causal_time != 0) {
@@ -120,8 +121,8 @@ void submit_task(
 **选择**: 顶层 JSON 字段 `parent_trace`，与既有 `trace_id` 完全同模式。
 
 **理由**:
-- `trace_id` 已是顶层字段（`tool_result.h:88`），不进 `meta`
-- 一致性优先 — 消费者端 `causal_order()` 读 `a.trace_id / b.parent_trace` 路径清晰
+- `trace_id` 已是顶层字段（`src/core/types/tool_result.h:88`），不进 `meta`
+- 一致性优先 — 消费者端 `causal_order()` 读 `a.payload.trace_id / b.payload.parent_trace` 路径清晰
 - 序列化字段名直接 = C++ 字段名（已有惯例）
 
 **Alternatives considered**:
@@ -173,7 +174,7 @@ void submit_task(
 → Mitigation: 用 `wait_for_drain()` 同步而非 sleep；TSan preset 验证
 
 [Risk] `parent_trace` 进 ToolResult 后,旧 JSONL 数据无此字段 → 反序列化 backward compat
-→ Mitigation: `std::optional<string>` + `nlohmann::json::value()` 缺值安全（tool_result.h 既有 `trace_id` 同模式，验证过）
+→ Mitigation: `std::optional<string>` + `nlohmann::json::value()` 缺值安全（`src/core/types/tool_result.h` 既有 `trace_id` 同模式，验证过）
 
 [Risk] `causal_order` 1-hop 限制被用户误用为传递闭包
 → Mitigation: 头文件 doxygen 注释明确说明；测试 case 3.2 显式注释"调用方链式推导"
@@ -188,7 +189,7 @@ void submit_task(
 - `ctest -R test_causal_ordering` PASS
 
 ### Step 2: T2 余量 ToolResult parent_trace
-- 修改 `include/agenticdsl/types/tool_result.h` (加 1 字段 + 序列化对)
+- 修改 `src/core/types/tool_result.h` (加 1 字段 + 序列化对)
 - `tests/test_causal_ordering.cpp` Section C: 序列化 2 cases (round-trip + 缺值容错)
 - `ctest -R test_tool_result` + `test_causal_ordering` PASS
 

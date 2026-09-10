@@ -23,9 +23,9 @@
 
 ### 2.1 字段添加
 
-- [ ] 2.1.1 `include/agenticdsl/types/tool_result.h` — 在 `trace_id` 旁加 `std::optional<std::string> parent_trace;`
-- [ ] 2.1.2 `include/agenticdsl/types/tool_result.h` — 序列化函数 `to_json()` 输出 `"parent_trace"` key (有值时)
-- [ ] 2.1.3 `include/agenticdsl/types/tool_result.h` — 反序列化 `from_json()` 缺值容错 (`j.value("parent_trace", std::optional<std::string>{})` 或 `contains` + 显式处理)
+- [ ] 2.1.1 `src/core/types/tool_result.h` — 在 `trace_id` 旁加 `std::optional<std::string> parent_trace;`
+- [ ] 2.1.2 `src/core/types/tool_result.h` — 序列化函数 `to_json()` 输出 `"parent_trace"` key (有值时)
+- [ ] 2.1.3 `src/core/types/tool_result.h` — 反序列化 `from_json()` 缺值容错 (`j.value("parent_trace", std::optional<std::string>{})` 或 `contains` + 显式处理)
 
 ### 2.2 测试扩展
 

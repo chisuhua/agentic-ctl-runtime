@@ -43,14 +43,14 @@ bool happens_before(const BusEvent& a, const BusEvent& b);
 ```
 
 **判定规则** (per ADR §4.1)：
-1. **L2 优先**: 若 `a.trace_id == b.parent_trace` → `ABeforeB`；反向同理
+1. **L2 优先**: 若 `a.payload.trace_id == b.payload.parent_trace` → `ABeforeB`；反向同理（注意：`trace_id`/`parent_trace` 是 ToolResult 字段，在 `BusEvent.payload` 内）
 2. **L1 回退**: 若两者 `causal_time` 已知 → `causal_time` 小者先
 3. **L3 默认**: 否则 → `Concurrent`
 
 ### 2. ToolResult 加 `parent_trace` 字段 (T2 剩余)
 
 ```cpp
-// include/agenticdsl/types/tool_result.h (追加, optional + JSON 序列化)
+// src/core/types/tool_result.h (追加, optional + JSON 序列化)
 std::optional<std::string> parent_trace;  // ADR-0037 L2 因果链
 ```
 
@@ -69,7 +69,7 @@ void submit_task(
 
 **默认参数保证零调用方迁移**（项目已有此惯例 — 见 `cancellation-chain-step4-loop-apis` 的 `std::stop_token` 默认参数模式）。
 
-### 5. DomainWorkerPool::submit_task 加 `parent_trace` 参数 (T5)
+### 4. DomainWorkerPool::submit_task 加 `parent_trace` 参数 (T5)
 
 ```cpp
 // include/agenticdsl/cognitive/domain_worker_pool.h
@@ -106,7 +106,7 @@ void submit_task(DomainTask task);  // 已是 struct 入参, 仅加字段
 **代码影响**:
 - 新增: `include/agenticdsl/contract/causal_order.h` (header-only, ~40 行)
 - 新增: `tests/test_causal_ordering.cpp` (~200 行, 10 cases)
-- 修改: `include/agenticdsl/types/tool_result.h` — 加 1 字段 (1 行 + 序列化 2 处)
+- 修改: `src/core/types/tool_result.h` — 加 1 字段 (1 行 + 序列化 2 处)
 - 修改: `include/agenticdsl/cognitive/cognitive_worker.h/.cpp` — submit_task 加默认参数 (2 处签名 + 1 处存到 task_contexts_)
 - 修改: `include/agenticdsl/cognitive/domain_worker_pool.h/.cpp` — DomainTask 加字段 + emit 时透传 (3 处)
 - 修改: `tests/test_cognitive_worker.cpp` + `tests/test_domain_worker_pool.cpp` — 加 1-2 个 parent_trace 测试 case
