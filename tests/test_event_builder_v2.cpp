@@ -84,6 +84,13 @@ TEST_CASE("EventBuilder V2: .trace_id setter sets payload.trace_id",
   REQUIRE(ev.payload.trace_id.value() == "abc-123");
 }
 
+TEST_CASE("EventBuilder V2: .parent_trace setter sets payload.parent_trace (ADR-0037 L2)",
+          "[contract][event][v2][causal_ordering]") {
+  auto ev = EventBuilder("task.started").parent_trace("task-P-1").build();
+  REQUIRE(ev.payload.parent_trace.has_value());
+  REQUIRE(ev.payload.parent_trace.value() == "task-P-1");
+}
+
 TEST_CASE("EventBuilder V2: .metadata setter sets payload.metadata distinct from meta",
           "[contract][event][v2]") {
   auto ev = EventBuilder("x")

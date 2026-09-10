@@ -83,6 +83,14 @@ class EventBuilder {
     return *this;
   }
 
+  // 设置 payload.parent_trace (ADR-0037 L2 因果链, causal-ordering-completion)
+  // 用于走无 ToolResult 构造路径 (e.g. cognitive.task.started) 时显式声明
+  // 当前事件的 parent trace_id, consumer 用 causal_order() 判定因果关系.
+  EventBuilder& parent_trace(std::string tid) {
+    payload_.parent_trace = std::move(tid);
+    return *this;
+  }
+
   // 设置 payload.metadata (P4 REQ-TR-004, 与 meta 不同的字段)
   EventBuilder& metadata(nlohmann::json m) {
     payload_.metadata = std::move(m);
