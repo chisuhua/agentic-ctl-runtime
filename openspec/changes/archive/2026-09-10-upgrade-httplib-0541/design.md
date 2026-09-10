@@ -61,13 +61,12 @@
 **Alternatives**:
 - 直接插入式构造 (不依赖迭代器) → 若编译失败启用
 
-### D4: 回归策略 = 全量 ctest + 3 使用点专项
+### D4: 回归策略 = 全量 ctest + 6 使用点回归
 
-**决策**: 升级后跑全量 ctest (228 baseline) + 专项验证:
-- `test_cloud_adapter_multithread` (HTTPS + Authorization, 8 worker stress)
-- `test_http_adapter` (HTTP Server mock, 7 cases)
-- `test_docker_backend` (Server)
-- `test_serializing_decorator` (4 unit) — 确保包装不回归
+**决策**: 升级后跑全量 ctest (228 baseline → 229 + test_httplib_version) + 6 个 httplib 使用点回归:
+- **生产代码 (3)**: `src/common/llm/cloud_adapter.cpp` + `src/common/llm/http_adapter.cpp` + `src/common/env/docker_backend.cpp` (编译期 + 运行期)
+- **测试代码 (3)**: `tests/test_cloud_adapter_multithread.cpp` (HTTPS + Authorization, 8 worker stress) + `tests/test_http_adapter.cpp` (HTTP Server mock, 7 cases) + `tests/test_docker_backend.cpp` (Server)
+- **专项**: `tests/test_serializing_decorator.cpp` (4 unit) — 确保包装不回归
 
 **理由**: 复用 AGENTS.md §ENGINEERING PATTERNS #4 SHIP-with-fixes 流程 + real-llm 测试模式
 
