@@ -25,9 +25,11 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 
 namespace agenticdsl {
@@ -102,13 +104,17 @@ class CognitiveWorker {
    * @brief 提交一个任务（异步, 非阻塞）
    * @param task_id 调用方提供的不透明关联键 (透传到 ToolResult::trace_id, P3 字段)
    * @param prompt  用户提示 (透传到 SimpleCognitiveOrchestrator::process)
+   * @param parent_trace 可选因果链上游 task_id (ADR-0037 L2, 透传到 ToolResult::parent_trace)
+   *                     默认 nullopt 保持既有 2 参数调用方零迁移。
    *
    * 前置条件: state_ == running
    * 违反: 抛 std::logic_error
    *
    * 行为: 加锁入队 + notify_one, 立即返回。
    */
-  void submit_task(const std::string& task_id, const std::string& prompt);
+  void submit_task(const std::string& task_id,
+                   const std::string& prompt,
+                   std::optional<std::string> parent_trace = std::nullopt);
 
   /**
    * @brief 停止 Worker (清理 thread, 取消未完成 task)
@@ -158,7 +164,8 @@ class CognitiveWorker {
   std::shared_ptr<IInteractionBus> bus_;
   std::shared_ptr<IEvaluator> evaluator_;  // 可选, 默认 nullptr (ADR-0083)
   std::thread worker_thread_;
-  std::queue<std::pair<std::string, std::string>> task_queue_;  // (task_id, prompt)
+  std::queue<std::tuple<std::string, std::string, std::optional<std::string>>>
+      task_queue_;  // (task_id, prompt, parent_trace) — causal-ordering-completion
   std::mutex queue_mutex_;
   std::condition_variable queue_cv_;
 };

@@ -119,14 +119,15 @@ void CognitiveWorker::start() {
 // submit_task: 加锁入队 + notify_one, 立即返回
 // =====================================================================
 void CognitiveWorker::submit_task(const std::string& task_id,
-                                  const std::string& prompt) {
+                                  const std::string& prompt,
+                                  std::optional<std::string> parent_trace) {
   if (state_.load() != State::running) {
     throw std::logic_error(
         "CognitiveWorker::submit_task: invalid state (Worker not running)");
   }
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
-    task_queue_.emplace(task_id, prompt);
+    task_queue_.emplace(task_id, prompt, std::move(parent_trace));
   }
   queue_cv_.notify_one();
 }
@@ -165,6 +166,7 @@ void CognitiveWorker::worker_loop() {
   while (state_.load() == State::running) {
     std::string task_id;
     std::string prompt;
+    std::optional<std::string> parent_trace;
 
     // 1) 阻塞等待任务 / stop 唤醒
     {
@@ -177,16 +179,23 @@ void CognitiveWorker::worker_loop() {
       }
       auto front = std::move(task_queue_.front());
       task_queue_.pop();
-      task_id = std::move(front.first);
-      prompt = std::move(front.second);
+      task_id = std::move(std::get<0>(front));
+      prompt = std::move(std::get<1>(front));
+      parent_trace = std::move(std::get<2>(front));
     }
 
     // 2) 推送 cognitive.task.started 事件 (ADR-0068 §5.6: EventBuilder 链式构造)
     //    topic 遵循 <module>.<verb> 约定 (e.g. dsl.call.started)
     //    task_id 通过 meta["task_id"] 关联 (不嵌入 topic, 与现有约定一致)
-    bus_->emit(agenticdsl::EventBuilder("cognitive.task.started")
-        .meta(nlohmann::json{{"task_id", task_id}})
-        .build());
+    //    ADR-0037 L2: parent_trace (若有) 透传到 payload 顶层字段
+    {
+      auto builder = agenticdsl::EventBuilder("cognitive.task.started")
+                         .meta(nlohmann::json{{"task_id", task_id}});
+      if (parent_trace.has_value()) {
+        builder = builder.parent_trace(*parent_trace);
+      }
+      bus_->emit(builder.build());
+    }
 
     // 3) 委托 SimpleCognitiveOrchestrator 单轮 ReAct
     //    注入 P1 抽象: engine_->get_tool_registry() (IToolRegistry&)
@@ -210,6 +219,12 @@ void CognitiveWorker::worker_loop() {
     // 5) P3 字段: result.trace_id = task_id (ADR-0023)
     //    约定: trace_id 为 caller-supplied 不透明字符串
     result.trace_id = task_id;
+
+    // 5.5) ADR-0037 L2: result.parent_trace = parent_trace (若有)
+    //      consumer 用 causal_order() 判定因果关系
+    if (parent_trace.has_value()) {
+      result.parent_trace = *parent_trace;
+    }
 
     // 6) 推送 cognitive.task.completed 事件
     // ADR-0068 §决策 7: operation-result event 通过 EventBuilder 接管 7 字段 (含 trace_id)

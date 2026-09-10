@@ -248,6 +248,36 @@ TEST_CASE("CognitiveWorker concurrent submit 10x100 TSan clean",
   REQUIRE(completed_count.load() == 1000);
 }
 
+TEST_CASE("CognitiveWorker submit_task(parent_trace) propagates to payload.parent_trace",
+          "[cognitive_worker][causal_ordering]") {
+  auto bus = std::make_shared<InMemoryBus>();
+  auto engine = make_engine_with_mock(R"({"tool":"none","args":{}})");
+
+  std::mutex captured_mutex;
+  std::optional<ToolResult> captured;
+  bus->subscribe("cognitive.task.completed", [&](const BusEvent& ev) {
+    std::lock_guard<std::mutex> lock(captured_mutex);
+    captured = ev.payload;
+  });
+
+  CognitiveWorker worker(std::move(engine), bus);
+  worker.start();
+  worker.submit_task("task-A", "p", "task-P");
+  wait_until([&] {
+    std::lock_guard<std::mutex> lock(captured_mutex);
+    return captured.has_value();
+  });
+  worker.stop();
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  std::lock_guard<std::mutex> lock(captured_mutex);
+  REQUIRE(captured.has_value());
+  REQUIRE(captured->parent_trace.has_value());
+  REQUIRE(*captured->parent_trace == "task-P");
+  REQUIRE(captured->trace_id.has_value());
+  REQUIRE(*captured->trace_id == "task-A");
+}
+
 // =====================================================================
 // Test 6: 状态机前置条件 (start 前 / stop 后 submit 抛 logic_error)
 // =====================================================================
