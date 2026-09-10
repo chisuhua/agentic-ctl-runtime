@@ -103,7 +103,19 @@ inline RealLLMConfig real_llm_config() {
   if (const char* ds = std::getenv("DEEPSEEK_API_KEY");
       ds && ds[0] != '\0') {
     cfg.provider = "deepseek";
-    cfg.model = "deepseek-v4-flash";
+    // ⚠️ NOT redundant: 使用 "deepseek-chat" 别名（非 "deepseek-v4-flash"）
+    // 原因：DeepSeek API 行为变更（2026-09 实证）—— model 名 "deepseek-v4-flash"
+    // 触发 reasoning mode（response.reasoning_content 耗光所有 token，
+    // response.content 永远 ""），"deepseek-chat" 映射到同一 v4-flash 引擎
+    // 但不触发 reasoning（response.content 直接返回 DSL）。curl 实证：
+    //   deepseek-v4-flash + plan prompt + max_tokens=4096 → content=""
+    //     (reasoning_tokens=4096/4096, finish_reason=None)
+    //   deepseek-chat   + plan prompt + max_tokens=2048 → content="```markdown..."
+    //     (reasoning_tokens=0, content=80 tokens)
+    // 影响：test_plan_execute_realllm.cpp C.1/C.2/C.3 (plan/verify phase
+    // 用 .text.empty() 判断空响应) 之前 deepseek-v4-flash 永远 FAIL。
+    // 修复后：content 正常返回 → .text 非空 → plan_phase 成功。
+    cfg.model = "deepseek-chat";
     cfg.api_url = "https://api.deepseek.com";
     cfg.api_endpoint = "/chat/completions";
     cfg.api_key = ds;
