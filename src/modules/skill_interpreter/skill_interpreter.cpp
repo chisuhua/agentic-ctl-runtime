@@ -413,8 +413,13 @@ class SkillInterpreter::Impl {
       int timeout_ms = 0;
       if (remaining > std::chrono::nanoseconds(0)) {
         auto rem_ms = std::chrono::duration_cast<std::chrono::milliseconds>(remaining);
-        // 最小 1ms，防止截断为 0 导致 false timeout
+        // 最小 1ms, 防止截断为 0 导致 false timeout
         timeout_ms = std::max(1, static_cast<int>(rem_ms.count()));
+        // P1 (Oracle SHIP-with-fixes): clamp poll 周期 ≤ 100ms 以使 mid-run cancel
+        // 及时响应. 原 cap.timeout_ms 路径下 hung 子进程会阻塞 poll 至 timeout,
+        // token 检查只在 loop-top, 外部 cancel 等满 timeout 才生效.
+        // 100ms 粒度足够 IPC 心跳 + cancel 响应, 不引入显著 CPU 开销.
+        timeout_ms = std::min(timeout_ms, 100);
       }
 
       int n;

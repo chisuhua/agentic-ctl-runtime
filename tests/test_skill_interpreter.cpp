@@ -251,6 +251,53 @@ TEST_CASE("7.8b pre-cancelled stop_token triggers immediate SIGKILL",
     cleanup_file(skill);
 }
 
+// === Test 7.8c (fix-skill-interpreter-token-and-timeout P1): mid-run cancel ===
+// 另一线程在子进程阻塞期间 request_stop(). 验证 poll timeout clamp (≤100ms)
+// 使 cancel 在 200ms 内被检测, 不等满 cap.timeout_ms = 30s.
+// 回归守卫: 未来回退 poll clamp → 中途 cancel 等满 timeout → elapsed > 200ms → 拦截.
+TEST_CASE("7.8c mid-run cancel detected within poll granularity",
+          "[skill_interpreter][token][mid-run][realllm-gap-fix]") {
+    MockToolRegistry tools;
+    test::MockBus bus;
+    SkillInterpreter interpreter(tools, bus, nullptr, nullptr);
+
+    std::string skill = create_temp_skill(
+        "---\n"
+        "name: mid-run-cancel\n"
+        "version: 0.1\n"
+        "description: test mid-run stop_token\n"
+        "---\n"
+        "call_tool(\"fs.read\", {\"path\": \"a.txt\"})\n"
+        "call_tool(\"fs.read\", {\"path\": \"b.txt\"})\n"
+        "call_tool(\"fs.read\", {\"path\": \"c.txt\"})\n");
+    REQUIRE(!skill.empty());
+
+    SkillCapability cap;
+    cap.allowed_tools = {"fs.read"};
+    cap.max_steps = 100;  // 避免 max_steps SIGKILL 干扰
+    cap.timeout_ms = std::chrono::milliseconds(30000);  // 长 timeout
+
+    std::stop_source ss;
+    std::thread canceller([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        ss.request_stop();
+    });
+
+    auto start = std::chrono::steady_clock::now();
+    auto result = interpreter.run(skill, cap, ss.get_token());
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    canceller.join();
+
+    CHECK_FALSE(result.success);
+    CHECK(result.error_code == ErrorCode::Abort);
+    // 核心契约: mid-run cancel 应 < 500ms (poll clamp 100ms × 数次迭代 + IPC 处理)
+    CHECK(elapsed < 500);
+
+    cleanup_file(skill);
+}
+
 TEST_CASE("7.12 inja 变量插值", "[skill_interpreter]") {
     MockToolRegistry tools;
     test::MockBus bus;
