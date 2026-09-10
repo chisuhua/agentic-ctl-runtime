@@ -84,7 +84,7 @@ struct DomainTask {
 void submit_task(DomainTask task);  // 已是 struct 入参, 仅加字段
 ```
 
-### 6. 新建 `tests/test_causal_ordering.cpp` (T7 + T8)
+### 5. 新建 `tests/test_causal_ordering.cpp` (T7 + T8)
 
 | Section | Cases | 覆盖 |
 |---------|-------|------|
