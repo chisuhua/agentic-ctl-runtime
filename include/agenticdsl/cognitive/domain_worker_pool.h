@@ -46,16 +46,18 @@ class IEvaluator;
  * handlers_["domain"] 路由到对应处理器.
  *
  * 字段:
- *  - domain:     领域标识 (e.g. "code", "browser", "fs")
- *  - tool_name:  工具全名 (e.g. "code::edit_file", 用于 bus 事件关联)
- *  - arguments:  工具参数 (nlohmann::json, handler 自由解析)
- *  - output_key: handler 返回 json 写入 result.data[output_key] 的 key
+ *  - domain:       领域标识 (e.g. "code", "browser", "fs")
+ *  - tool_name:    工具全名 (e.g. "code::edit_file", 用于 bus 事件关联)
+ *  - arguments:    工具参数 (nlohmann::json, handler 自由解析)
+ *  - output_key:   handler 返回 json 写入 result.data[output_key] 的 key
+ *  - parent_trace: ADR-0037 L2 因果链上游 task_id, 透传到 emit payload.parent_trace
  */
 struct DomainTask {
   std::string domain;
   std::string tool_name;
   nlohmann::json arguments = nlohmann::json::object();
   std::string output_key;
+  std::optional<std::string> parent_trace;  // ADR-0037 causal-ordering-completion
 };
 
 /**

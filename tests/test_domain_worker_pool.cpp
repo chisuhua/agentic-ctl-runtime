@@ -159,6 +159,41 @@ TEST_CASE("DomainWorkerPool submit dispatches to worker",
   bus->unsubscribe(token);
 }
 
+TEST_CASE("DomainWorkerPool submit_task(DomainTask.parent_trace) propagates to payload.parent_trace",
+          "[domain_worker_pool][causal_ordering]") {
+  auto bus = std::make_shared<InMemoryBus>();
+  DomainWorkerPool pool(4, bus);
+
+  std::mutex completed_mutex;
+  std::vector<ToolResult> completed_events;
+  bus->subscribe("domain.task.completed", [&](const BusEvent& e) {
+    std::lock_guard<std::mutex> lock(completed_mutex);
+    completed_events.push_back(e.payload);
+  });
+
+  pool.register_domain_handler("echo", make_echo_handler());
+  pool.start();
+
+  DomainTask task;
+  task.domain = "echo";
+  task.tool_name = "echo::test";
+  task.arguments = nlohmann::json{{"message", "hello"}};
+  task.output_key = "result";
+  task.parent_trace = "task-P-1";
+  pool.submit_task(std::move(task));
+
+  wait_until([&] {
+    std::lock_guard<std::mutex> lock(completed_mutex);
+    return !completed_events.empty();
+  });
+  pool.stop();
+
+  std::lock_guard<std::mutex> lock(completed_mutex);
+  REQUIRE(completed_events.size() == 1);
+  REQUIRE(completed_events[0].parent_trace.has_value());
+  REQUIRE(*completed_events[0].parent_trace == "task-P-1");
+}
+
 // =====================================================================
 // Test 3: 1000x 并发 submit (10 thread × 100 task, 零 data race)
 // =====================================================================

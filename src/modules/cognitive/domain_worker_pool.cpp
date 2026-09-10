@@ -205,14 +205,17 @@ void DomainWorkerPool::worker_loop(std::stop_token st, std::size_t worker_id) {
 void DomainWorkerPool::process_task(std::size_t worker_id, DomainTask task) {
   // 1) 推送 domain.task.started 事件 (ADR-0068 §5.8: EventBuilder 链式构造)
   if (bus_) {
-    bus_->emit(agenticdsl::EventBuilder("domain.task.started")
-        .args(nlohmann::json{
-            {"domain", task.domain},
-            {"tool_name", task.tool_name},
-            {"output_key", task.output_key}
-        })
-        .meta(nlohmann::json{{"worker_id", worker_id}})
-        .build());
+    auto builder = agenticdsl::EventBuilder("domain.task.started")
+                       .args(nlohmann::json{
+                           {"domain", task.domain},
+                           {"tool_name", task.tool_name},
+                           {"output_key", task.output_key}
+                       })
+                       .meta(nlohmann::json{{"worker_id", worker_id}});
+    if (task.parent_trace.has_value()) {
+      builder = builder.parent_trace(*task.parent_trace);
+    }
+    bus_->emit(builder.build());
   }
 
   // 2) 查表 + 拷贝 handler (在 shared_lock 下查, 释放锁后调用)
@@ -249,6 +252,11 @@ void DomainWorkerPool::process_task(std::size_t worker_id, DomainTask task) {
   result.meta["tool_name"] = task.tool_name;
   result.meta["output_key"] = task.output_key;
   result.meta["worker_id"] = worker_id;
+
+  // ADR-0037 L2: parent_trace 透传至 emit 事件 payload (顶层 ToolResult 字段)
+  if (task.parent_trace.has_value()) {
+    result.parent_trace = *task.parent_trace;
+  }
 
   try {
     nlohmann::json output = handler(task);
