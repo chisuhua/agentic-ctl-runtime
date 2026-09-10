@@ -5,12 +5,17 @@
 
 ## 状态
 
-🔍 Proposed (追踪物, 实施升级时升级到 Approved)
+🟡 Partial (Sprint 24 调研完成, §Step 1+2 假设偏差已修订, 见 §实施日志)
 
 > **背景 (2026-09-08)**: Wave 1 #2 `fix-cloud-adapter-multithreading` 通过工厂层
 > `SerializingDecorator` (mutex + cv 串行化 generate/generate_stream) 规避了
 > CloudLLMAdapter 多线程 SIGSEGV — **这是规避, 不是根因修复**. 本 ADR 记录根因
 > 诊断 + 升级路径, 防止 N→1 性能税意外固化为永久架构.
+>
+> **Sprint 24 修订 (2026-09-10)**: 见 §实施日志. 调研发现 §Step 1+2 假设
+> 均部分/完全失效 (OpenSSL 已 3.0.13,代码 0 行 OpenSSL 调用; httplib 0.18.4
+> 已含 PR #701 threading fix). 升级路径重定位至 httplib CVE-2026-33745
+> (Critical security) 升级, 真根因待 Sprint 26 实证.
 >
 > **OpenSpec 追踪**: `openspec/changes/cloud-adapter-threading-root-cause/` (scaffold).
 > **Wave 1 #2 实施**: ship (commit `3d653e0` + Phase 2 commits).
@@ -97,6 +102,15 @@ target_link_libraries(agenticdsl_common PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 - SSL_CTX per-thread 正确初始化 (OpenSSL 3.0 默认 `OSSL_set_max_threads`)
 - 现有 SSL 调用代码 ABI 兼容 (OpenSSL 3.0 提供 v1.1 → 3.0 兼容层)
 
+> **Sprint 24 修订 (2026-09-10)**: §Step 1 假设**已隐式完成,0 LOC 迁移**。
+> - 系统 OpenSSL 已是 3.0.13 (`cmake -LA build | grep openssl` + `openssl version`)
+> - `find_package(OpenSSL REQUIRED)` 无版本约束,自动找最高版本
+> - `cloud_adapter.cpp` **0 行 OpenSSL 代码** (无 SSL_CTX/EVP_/X509_ 直接调用)
+> - 所有 SSL 操作封装在 `httplib::Client` 内 (line 244, 265)
+>
+> 详见审计: `docs/audits/2026-09-10-adr-0087-sprint-24-openssl-audit.md`
+> §修订建议: Step 1 从 ADR 升级路径中**删除或重写**,Sprint 25 范围重定位。
+
 ### Step 2 — httplib 升级
 
 调研 upstream commit history:
@@ -106,6 +120,24 @@ target_link_libraries(agenticdsl_common PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 集成:
 - 替换 `external/httplib/httplib.h` 为 upstream 最新版
 - 回归测试现有 `tests/test_http_adapter.cpp` 单线程路径
+
+> **Sprint 24 修订 (2026-09-10)**: §Step 2 假设**部分失效,需重写升级理由**。
+> - **真实 threading fix 是 PR #701** (merged Nov 29, 2020, shipped in v0.8.0)
+>   - Issue #697 + #699 — `SSL_shutdown on already-closed socket` race
+>   - 关键代码: `socket_requests_in_flight_` (line 1507-1509), `ctx_mutex_` (8940-8968)
+> - 当前 vendored **httplib 0.18.4 已含 PR #701 fix** (本地 grep 实证)
+> - **handoff 提到的 issue #1903 与 threading 无关** (是 Windows file size 32-bit bug)
+> - ADR §根因诊断 (line 82-84) 混淆 PR #701 (threading) vs #1903 (Windows file size)
+>
+> **真正升级理由 — CVE-2026-33745 (GHSA-6hrp-7fq9-3qv2)**:
+> - Severity: **Critical** (auth credentials leaked on cross-origin redirect)
+> - Fixed in: **v0.39.0**
+> - 当前 0.18.4 未含此 fix
+> - 本项目 `cloud_adapter.cpp` 当前**未使用** `set_follow_location(true)` → **未触发**,但**未来引入风险高**
+>
+> 详见审计: `docs/audits/2026-09-10-adr-0087-sprint-24-httplib-status.md`
+> §修订建议: Sprint 25 重定位至 **httplib 升级 0.18.4 → v0.39.0+ for security**,
+> 保留 §Step 2 框架但替换升级理由。
 
 ### Step 3 — 验证清单
 
@@ -157,6 +189,69 @@ if (backend == "openai" || ...) {
 - 项目其他模块 (Skill IPC / pdk_chat_demo) 出现多线程 LLM 问题
 
 每次 Sprint 收官 review 评估触发条件.
+
+## 实施日志
+
+### Sprint 24 调研 (2026-09-10)
+
+**调研人**: Sisyphus session (Wave 4 series + 2 follow-ups ship 后)
+
+**目标** (per handoff §3): OpenSSL 3.0 ABI audit + httplib issue #1903 fix status 调研
+
+**调研产出**:
+- `docs/audits/2026-09-10-adr-0087-sprint-24-openssl-audit.md` (本 ADR §Step 1 假设验证)
+- `docs/audits/2026-09-10-adr-0087-sprint-24-httplib-status.md` (本 ADR §Step 2 假设验证 + CVE 发现)
+
+**关键发现**:
+
+1. **§Step 1 (OpenSSL 3.0 集成) — 0 LOC 迁移,已隐式完成**
+   - 系统 OpenSSL 已是 3.0.13 (find_package 无版本约束,自动找最高)
+   - `cloud_adapter.cpp` **0 行 OpenSSL 代码** (所有 SSL 操作封装在 httplib 内)
+   - 不需要任何代码改动
+
+2. **§Step 2 (httplib 升级 for threading) — 假设失效,已隐式完成**
+   - 真实 threading SIGSEGV fix = **PR #701** (merged Nov 29, 2020)
+   - shipped in **v0.8.0 (Jan 12, 2021)**
+   - 当前 vendored 0.18.4 **已含 PR #701** (line 1507-1509 `socket_requests_in_flight_` + line 8940-8968 `ssl_new` with `ctx_mutex_` + line 7477 `request_mutex_` + line 663 `authorization_count_`)
+   - handoff §3.2 提到的 issue #1903 **与 threading 无关** (Windows file size 32-bit bug)
+
+3. **§根因诊断混淆独立 issues** — ADR §根因诊断 (line 82-84) 混用 PR #701 (threading) 与 issue #1903 (Windows file size),需修订澄清
+
+4. **🚨 新发现 CVE-2026-33745 (GHSA-6hrp-7fq9-3qv2)** — Critical security
+   - Auth credentials leaked on cross-origin redirect (`set_follow_location(true)` + 401 + redirect → Authorization header leaked to third-party)
+   - Fixed in **v0.39.0**
+   - 当前 0.18.4 **未含此 fix**
+   - 本项目 `cloud_adapter.cpp` **当前未使用** `set_follow_location(true)` → **未触发**,但**未来引入风险高**
+
+**Sprint 25 范围重定位建议**:
+
+| 原计划 | 建议改为 | 理由 |
+|--------|---------|------|
+| §Step 1 OpenSSL 3.0 集成 (1-1.5 天) | **删除** | 0 LOC,已隐式完成 |
+| §Step 2 httplib 升级 for threading (1-1.5 天) | **保留框架,替换理由** — 升级 to v0.39.0+ for **CVE-2026-33745 security** | Threading 已隐式完成,security 是新优先 |
+
+**Sprint 26 实证方案 (待启动)**:
+
+1. 升级 httplib 到 v0.39.0+ (含 CVE fix)
+2. 暂时移除 SerializingDecorator 默认包装 (`llm_provider_factory.cpp:102-114`)
+3. 跑 8 worker × 20 task stress (`test_cloud_adapter_multithread.cpp`)
+4. 跑 Phase E Skill IPC + Phase G ContextCompactor (多 worker 真并发)
+5. **如果零 SIGSEGV** → §Decision 1 "默认包装" 可移除,SerializingDecorator 真正 OPT-IN
+6. **如果仍 SIGSEGV** → 真根因更细 (chunked transfer? stream parser?), 需 gdb 重诊断 (类似 c0cb522 Phase B 流程)
+
+**GO/NO-GO 决策**: **🟢 GO (修订后)** — Sprint 25 重定位至 httplib v0.39.0+ 升级 (security),无需 OpenSSL 集成。Sprint 26 启动真根因实证。
+
+**未解问题** (per handoff §7):
+- ✅ Q1 OpenSSL 3.0 ABI break 影响面 = 0 LOC (回答: 0)
+- ✅ Q2 httplib upstream fix 是否已 merged = 是 (PR #701, in v0.8.0+)
+- 🆕 Q2-extra httplib security CVE-2026-33745 fix 在 v0.39.0 (新发现,优先级更高)
+- ⏳ Q3 4 worker benchmark 预期 ~4× 加速 — 待 Sprint 28 实证 (基准测试前置 v0.39.0 升级)
+- ✅ Q4 是否需同步升级 `external/async_simple/demo_example/CMakeLists.txt` OpenSSL 引用 = 否 (该引用是 demo 路径,不参与生产 cloud LLM)
+- 🆕 Q6 (新) Sprint 25 升级 httplib 时是否需要 fork upstream PR — 否,直接用 v0.39.0 official tag
+
+**ADR-0087 状态**: 🔍 Proposed → 🟡 Partial (调研完成,根因诊断修订)
+
+---
 
 ## 兼容性
 
