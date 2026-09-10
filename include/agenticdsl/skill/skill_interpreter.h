@@ -78,9 +78,12 @@ class SkillInterpreter {
   /// 执行 SKILL.md 文件
   /// @param skill_path .skill.md 文件路径
   /// @param cap        capability 限制
+  /// @param token      取消信号 (默认空 token 保持向后兼容). 取消时立即 SIGKILL 子进程
+  ///                   并返回 ErrorCode::Abort, 不等 cap.timeout_ms.
   /// @return SkillResult 包含执行结果、stderr、退出码等
   SkillResult run(const std::string& skill_path,
-                  const SkillCapability& cap);
+                  const SkillCapability& cap,
+                  std::stop_token token = {});
 
  private:
   class Impl;

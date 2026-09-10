@@ -211,6 +211,46 @@ TEST_CASE("7.8 SIGKILL 进行中", "[skill_interpreter]") {
     cleanup_file(skill);
 }
 
+// === Test 7.8b (fix-skill-interpreter-token-and-timeout): 外部 stop_token 取消 ===
+// pre-cancel stop_token → run() 应立即 SIGKILL 子进程 (不等到 cap.timeout_ms)
+// 并返回 ErrorCode::Abort. 回归守卫: 未来回退 token.stop_requested() 检查或删 token
+// 形参 → run() 会等满 cap.timeout_ms → 本测试断言 elapsed < 5s 失败 → 拦截.
+TEST_CASE("7.8b pre-cancelled stop_token triggers immediate SIGKILL",
+          "[skill_interpreter][token][realllm-gap-fix]") {
+    MockToolRegistry tools;
+    test::MockBus bus;
+    SkillInterpreter interpreter(tools, bus, nullptr, nullptr);
+
+    std::string skill = create_temp_skill(
+        "---\n"
+        "name: token-cancel-test\n"
+        "version: 0.1\n"
+        "description: test stop_token cancellation\n"
+        "---\n"
+        "call_tool(\"fs.read\", {\"path\": \"test.txt\"})\n"
+        "call_tool(\"fs.read\", {\"path\": \"test2.txt\"})\n");
+    REQUIRE(!skill.empty());
+
+    SkillCapability cap;
+    cap.allowed_tools = {"fs.read"};
+    cap.max_steps = 100;
+    cap.timeout_ms = std::chrono::milliseconds(30000);
+
+    std::stop_source ss;
+    ss.request_stop();
+
+    auto start = std::chrono::steady_clock::now();
+    auto result = interpreter.run(skill, cap, ss.get_token());
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    CHECK_FALSE(result.success);
+    CHECK(result.error_code == ErrorCode::Abort);
+    CHECK(elapsed < 5000);
+
+    cleanup_file(skill);
+}
+
 TEST_CASE("7.12 inja 变量插值", "[skill_interpreter]") {
     MockToolRegistry tools;
     test::MockBus bus;
@@ -318,7 +358,7 @@ TEST_CASE("7.19 SKILL.md 解析错误", "[skill_interpreter]") {
     cap.max_steps = 50;
     cap.timeout_ms = std::chrono::milliseconds(10000);
 
-    auto result = interpreter.run(skill, cap);
+auto result = interpreter.run(skill, cap);
 
     CHECK_FALSE(result.success);
     CHECK(result.error_code == ErrorCode::InvalidArg);

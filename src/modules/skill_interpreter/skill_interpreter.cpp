@@ -177,7 +177,8 @@ class SkillInterpreter::Impl {
   }
 
   SkillResult run(const std::string& skill_path,
-                  const SkillCapability& cap) {
+                  const SkillCapability& cap,
+                  std::stop_token token) {
 #ifdef __linux__
     // 重置预算计数器
     budget_used_.store(0.0, std::memory_order_relaxed);
@@ -272,7 +273,7 @@ class SkillInterpreter::Impl {
 
     // === Step 6: IPC 循环 ===
     SkillResult result = ipc_loop_and_wait(
-        pid, pipe_out[0], pipe_in[1], pipe_err[0], cap);
+        pid, pipe_out[0], pipe_in[1], pipe_err[0], cap, token);
 
     auto end_time = std::chrono::steady_clock::now();
     result.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -353,7 +354,8 @@ class SkillInterpreter::Impl {
 
   /// IPC 循环 + waitpid 超时管理
   SkillResult ipc_loop_and_wait(pid_t pid, int pipe_out_r, int pipe_in_w,
-                                 int pipe_err_r, const SkillCapability& cap) {
+                                 int pipe_err_r, const SkillCapability& cap,
+                                 std::stop_token token = {}) {
     // 保存 pipe fd 以便析构时关闭
     pipe_out_r_ = pipe_out_r;
     pipe_in_w_ = pipe_in_w;
@@ -379,6 +381,20 @@ class SkillInterpreter::Impl {
     while (true) {
       auto now = std::chrono::steady_clock::now();
       auto remaining = deadline - now;
+
+      // 外部 cancel → 立即 SIGKILL (不等到 cap.timeout_ms)
+      if (token.stop_requested()) {
+        kill_retry(pid, SIGKILL);
+        int status;
+        waitpid_reap(pid, &status);
+        SkillResult r;
+        r.success = false;
+        r.error_code = ErrorCode::Abort;
+        r.stderr_content = stderr_buf;
+        r.stderr_truncated = stderr_truncated;
+        r.child_exit_status = status;
+        return r;
+      }
 
       if (remaining <= std::chrono::nanoseconds(0)) {
         kill_retry(pid, SIGKILL);
@@ -708,8 +724,9 @@ SkillInterpreter::SkillInterpreter(SkillInterpreter&&) noexcept = default;
 SkillInterpreter& SkillInterpreter::operator=(SkillInterpreter&&) noexcept = default;
 
 SkillResult SkillInterpreter::run(const std::string& skill_path,
-                                   const SkillCapability& cap) {
-  return impl_->run(skill_path, cap);
+                                   const SkillCapability& cap,
+                                   std::stop_token token) {
+  return impl_->run(skill_path, cap, token);
 }
 
 }  // namespace agenticdsl
