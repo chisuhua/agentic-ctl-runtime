@@ -298,7 +298,7 @@
 | ⏸ **Phase 8a Data Plane (gRPC)** | **结构性暂缓** — 依赖 Control Plane ship ≥3 个月 + 路由阈值实测校准需求 | (1) Phase 7 ship ≥3 个月 + 零 critical bug; (2) MCP 路由阈值实测校准需求; (3) 分布式部署需求 OR LLMDataPlane 高频需求 | 路线图 v3 Phase 8a 启动评估 (per ADR-0077 D8) |
 | ➡️ C16 §5 Cloud plugin 顺延 | 持续关注 | 外部触发 (CloudLLMProvider 实施需求) | 独立 OpenSpec change `phase5-illmprovider-call-chain-v3` 跟踪 (受 Phase 6 暂缓影响) |
 | ➡️ C17 排除 ADR-0030 V2 顺延 | Fleet 实施需求 | FleetOrchestrator 解除延迟 (Oracle 2026-06-27 决议) | C19 或后续 ship 时迁移至 🟡 Partial |
-| ➡️ C17 排除 ADR-0037 顺延 | 因果排序机制未实施 | Phase 7+ 自进化 | 由 AgentForge 使用情况触发 |
+| ✅ ADR-0037 causal-ordering-completion 完成 | (已 ship 2026-09-10, OpenSpec `2026-09-10-adr-0037-causal-ordering-completion` 5 commits archived) | T2 余量 (ToolResult::parent_trace) + T3.0 (EventBuilder.parent_trace setter) + T4 (CognitiveWorker::submit_task(parent_trace)) + T5 (DomainWorkerPool::DomainTask.parent_trace) + T6 (causal_order.h 判定函数) + T7+T8 (9 cases / 31 assertions 测试集) | ADR-0037 状态保持 🟡 Partial (VectorClock/ReorderBuffer 等跨进程机制仍 defer — 升级 ✅ Approved 需 EventBus 落地) |
 | ➡️ C17 排除 ADR-0038 顺延 | 推理引擎动态配置接口未实施 | 第二个推理 backend 出现时 (per ADR-0038 §增量决议) | C15 实施后由 C18 重新评估 |
 | ➡️ C17 排除 ADR-0039 顺延 | JSON 查询工具 (`inference/get/status`) 未实现 | 实际外部消费者触发时 | 由 AgentForge 反馈触发 |
 | ➡️ C17 排除 ADR-0042 顺延 | ILLMProvider 演进路径仅部分决策实施 | C16 §5 Cloud 插件 + 第 2 阶段重新映射交付后 | Phase 6 服务化重新评估时处理 |

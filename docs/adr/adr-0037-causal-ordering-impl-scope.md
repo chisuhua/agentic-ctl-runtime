@@ -21,6 +21,12 @@
 | ADR 描述的类 | 实际状态 | 实际位置 (如有) | 备注 |
 |--------------|---------|----------------|------|
 | `CausalClock` | ✅ Shipped | `include/agenticdsl/contract/causal_clock.h` + `src/common/contract/causal_clock.h` | 2026-07-27 ship, 含 emit auto-tick (gap-analysis 2026-07-30 基线确认) |
+| `causal_order.h` (判定函数, T6) | ✅ Shipped | `include/agenticdsl/contract/causal_order.h` | 2026-09-10 ship (OpenSpec change `2026-09-10-adr-0037-causal-ordering-completion` Commit 1) — header-only 三规则判定 (L2 → L1 → Concurrent) |
+| `ToolResult::parent_trace` 字段 (T2 余量) | ✅ Shipped | `src/core/types/tool_result.h/.cpp` | 2026-09-10 ship (Commit 1) — `std::optional<std::string>` + JSON 序列化 |
+| `EventBuilder::parent_trace()` setter (T3.0) | ✅ Shipped | `include/agenticdsl/contract/event_builder.h` | 2026-09-10 ship (Commit 2) — 仿 `.trace_id()` 模式 |
+| `CognitiveWorker::submit_task(parent_trace)` (T4) | ✅ Shipped | `include/agenticdsl/cognitive/cognitive_worker.h` + `src/modules/cognitive/cognitive_worker.cpp` | 2026-09-10 ship (Commit 3) — 默认参数 + emit 透传 |
+| `DomainWorkerPool::DomainTask.parent_trace` (T5) | ✅ Shipped | `include/agenticdsl/cognitive/domain_worker_pool.h` + `src/modules/cognitive/domain_worker_pool.cpp` | 2026-09-10 ship (Commit 4) — struct 字段 + emit 透传 |
+| 跨 Worker 因果链集成测试 (T7+T8) | ✅ Shipped | `tests/test_causal_ordering.cpp` | 2026-09-10 ship (Commit 5) — Section A/B/C/D = 9 cases / 31 assertions |
 | `VectorClock` | ⏸ Deferred | — | 分布式向量时钟, ADR 正文明确 defer (单机 InMemoryBus 阶段不需要) |
 | `LamportClock` | ⏸ Deferred | — | 同上, 被 CausalClock 设计吸收, 不单独实施 |
 | `EventSequencer` | ⏸ Deferred | — | 分布式事件定序, 随 VectorClock 一并 defer |
@@ -29,5 +35,5 @@
 ## 结论
 
 - **主 ADR 状态 🟡 Partial 准确**, 无需调整。
-- 状态提升轨迹: 2026-06-26 🔍 Proposed 起草 → 2026-07-27 🟡 Partial (CausalClock + emit auto-tick ship, 见 `docs/architecture/adr-implementation-status-gap-analysis.md`)。
+- 状态提升轨迹: 2026-06-26 🔍 Proposed 起草 → 2026-07-27 🟡 Partial (CausalClock + emit auto-tick ship) → 2026-09-10 🟡 Partial (T2 余量 + T3.0 + T4 + T5 + T6 + T7 + T8 全 ship, 见 `openspec/changes/archive/2026-09-10-adr-0037-causal-ordering-completion/`)。
 - **转 ✅ Approved 条件**: 跨进程/分布式 EventBus 落地 (ADR-0046/0059 系列) 且 VectorClock 或等价定序机制实施。
