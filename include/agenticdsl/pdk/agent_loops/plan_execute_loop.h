@@ -269,11 +269,21 @@ class PlanExecuteLoop {
     std::string data_dump = working.is_object() && working.contains("data")
                                 ? working["data"].dump()
                                 : std::string{"{}"};
+    // ⚠️ NOT redundant: 加 "Plan status: appended" 作为 execute_phase 成功证据。
+    // 根因: 旧 prompt "Goal: X\nResult: {}\nVerify success: answer yes or no:"
+    //       在 Result={} 时 (plan_execute_loop.h run() 重置 working.data = {})
+    //       deepseek 8/10 yes 但 2/10 no (空 data 无 evidence → LLM 合理判 no).
+    //       curl 实证: 新 prompt 加 "Plan status: appended" 后 10/10 yes.
+    // execute_phase 失败时不会调 verify (line 163 直接 return Verifying),
+    // 所以此处 plan_appended 必然 true → "appended" 是事实陈述非误导.
+    const std::string plan_status_line =
+        "Plan status: appended\n";
     agenticdsl::GenerationRequest req;
     req.prompt =
         "Goal: " + goal +
-        "\nResult: " + data_dump +
-        "\nVerify success: answer 'yes' or 'no':";
+        "\n" + plan_status_line +
+        "Result: " + data_dump +
+        "\nVerify the plan was appended successfully (yes/no):";
     // ⚠️ NOT redundant: 与 plan_phase 同理 (LLMParams 默认 model 遮蔽 adapter
     // config_.model), 详见 plan_phase 上方注释 + openspec/changes/fix-generation-request-model-default/.
     req.params.model.clear();

@@ -55,7 +55,12 @@ TEST_CASE("try_pop_input returns nullopt when empty", "[chat_session][consumer][
 TEST_CASE("pop_next_input returns promptly when input thread shutdown (EOF)",
           "[chat_session][consumer][blocking]") {
     CinEofGuard eof;
-    ChatSession session(nullptr, nullptr, nullptr, {}, {});
+    // ⚠️ 显式开启 input thread (默认已改 false, 见 chat_session.h):
+    // 本 case 依赖 input thread 见 EOF 立即置 stop_input_thread_,
+    // 使 pop_next_input 快速返回 nullopt.
+    SessionConfig session_cfg;
+    session_cfg.enable_input_thread = true;
+    ChatSession session(nullptr, nullptr, nullptr, {}, session_cfg);
 
     // Test env: stdin already EOF → input thread sets stop_input_thread_
     // immediately → pop_next_input returns nullopt. Real blocking is exercised

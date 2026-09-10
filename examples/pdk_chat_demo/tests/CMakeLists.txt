@@ -112,6 +112,9 @@ add_test(
     COMMAND test_chat_session_events
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
+# Real LLM test: DeepSeek API 调用 + session JSONL 写入可能 >20s
+# 60s 在用户环境仍 timeout (60.06s 实证), 提升到 120s 给 system-specific 缓冲
+set_tests_properties(test_chat_session_events PROPERTIES TIMEOUT 120)
 
 # test_e2e_mock
 add_executable(test_e2e_mock
@@ -148,6 +151,7 @@ add_test(
 )
 set_tests_properties(test_e2e_mock PROPERTIES
     ENVIRONMENT "HYDRAFORGE_PLUGIN_PATH=${PROJECT_BINARY_DIR}/pdk:${CMAKE_BINARY_DIR}/pdk"
+    TIMEOUT 120
 )
 
 # test_dsl_validation — T2: DSL schema 校验 (≥5 scenarios)
@@ -244,6 +248,8 @@ add_test(
     COMMAND test_session_persistence
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
+# Real LLM + JSONL 持久化 (跨进程) — 用户环境 60s 不够, 提升到 120s
+set_tests_properties(test_session_persistence PROPERTIES TIMEOUT 120)
 
 # test_budget_alert - T1: budget exceeded emit, at-limit, thread-safe callback
 add_executable(test_budget_alert
@@ -274,6 +280,8 @@ add_test(
     COMMAND test_budget_alert
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
+# budget 实时计算 + mock LLM 多次调用 — 用户环境 60s 不够, 提升到 120s
+set_tests_properties(test_budget_alert PROPERTIES TIMEOUT 120)
 
 # test_e2e_real_llm — 真实 LLM 集成测试 (minimax)
 # 需要 MINIMAX_API_KEY 环境变量；未设置时自动跳过
@@ -309,6 +317,7 @@ add_test(
 )
 set_tests_properties(test_e2e_real_llm PROPERTIES
     ENVIRONMENT "HYDRAFORGE_PLUGIN_PATH=${PROJECT_BINARY_DIR}/pdk"
+    TIMEOUT 60
 )
 
 # test_pdk_chat_unknown_command — unknown slash command handling + /exit sentinel
@@ -454,6 +463,8 @@ add_test(
     COMMAND test_chat_session_queues
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
+# Real LLM + 双队列 (steering/follow-up) input thread + LLM 多次串行
+set_tests_properties(test_chat_session_queues PROPERTIES TIMEOUT 60)
 
 # test_signal_shutdown — subprocess regression tests for SIGINT/SIGTERM shutdown safety
 add_executable(test_signal_shutdown
@@ -704,6 +715,8 @@ add_test(
     COMMAND test_model_switching
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
+# Real LLM + model runtime switching (含 mock-mode guard + stderr verify)
+set_tests_properties(test_model_switching PROPERTIES TIMEOUT 60)
 
 # test_plan_execute_loop_integration — Phase 6a U1: PlanExecuteLoop end-to-end integration
 add_executable(test_plan_execute_loop_integration

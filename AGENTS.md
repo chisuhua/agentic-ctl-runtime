@@ -203,6 +203,32 @@ HydraForge/
 - 不派 Oracle 直接 ship 大 change → 高风险, 一旦发现 bug 需拆 commit.
 - 派 Oracle 后一次性修正 + amend → 失去原子性, 无法回溯"原始 ship 时状态".
 
+#### 5. 默认值 fail-safe：stdin 阻塞的隐性死锁陷阱 (TTY 环境 vs AI bash)
+
+**触发**: 生产代码启动 `std::thread` 读 stdin (典型: `std::getline(std::cin, line)`)，且开关项默认值 = true / 条件无门槛自动启动。
+
+**陷阱**: AI 子进程 stdin = `/dev/null`，`getline` 立即 EOF 返回 → 线程正常退出 → 测试通过。**但用户从交互终端跑 ctest 时 stdin = TTY**，`getline` 永远等键盘输入 → 线程挂死 → 析构 `join()` 也挂死 → ctest 只能 TIMEOUT kill，**且任何 TIMEOUT 值都救不了**（60s / 120s / 300s 都是死循环，TIMEOUT 触发 SIGTERM 不会触发 thread 内部中断）。
+
+**5 步沉淀**:
+1. **检测信号** — 测试在某人跑中 timeout 60s, 调到 120s 仍 timeout → **不是时间问题, 是内部阻塞**
+2. **复现隔离** — `script -qec "ctest ..." /dev/null` 给 ctest 分配 PTY, stdin 变 TTY, 复现用户环境 (AI bash 默认 stdin=/dev/null 无法复现, 这是关键)
+3. **根因定位** — grep `std::getline|std::cin` + 找构造 `std::thread` 的路径, 验证默认开启
+4. **修复 fail-safe** — 默认值改 false (startup thread 不自动启动), 生产入口显式开启 (`main.cpp` 已显式设 = true), 需要 stdin 的测试显式开启
+5. **回归守卫** — `script` 模拟 TTY 跑全量 ctest, 确认修复 (228/228 PASS, 88.51s)
+
+**反模式**:
+- `timeout 5 ctest` 包一层 → 救不了, thread 已经挂死, timeout 只是 SIGTERM
+- `set_tests_properties(... TIMEOUT 300 ...)` → 救不了, 60s/120s/300s 都一样
+- 责怪 flaky test → 是产品代码默认值设计问题 (PR/branch 而非 test 责任)
+- 仅在非 TTY 环境下验证 → 永远抓不到, 必须 `script` 模拟
+
+**2026-09-09 case study (ChatSession)**:
+- 5 个测试 timeout 120s: `test_chat_session_events` (#4) / `test_e2e_mock` (#5) / `test_session_persistence` (#8) / `test_budget_alert` (#9) / `test_model_switching` (#24)
+- 根因: `SessionConfig::enable_input_thread` 默认值 = true, 所有 `ChatSession(nullptr, ..., {}, {})` 构造自动启动 stdin thread (`chat_session.cpp:716-751`)
+- 修复: 默认值改 false (1 文件 `chat_session.h`), `main.cpp:447` 保持显式 true, 2 个依赖 stdin 的测试 (`test_chat_session_queues.cpp:49`, `test_chat_session_consumer.cpp:55`) 显式开启
+- 验证: `script -qec "ctest --test-dir build" /dev/null` → 228/228 PASS, 88.51s
+- 教训: **默认值 fail-safe** (默认关, 显式开) > 默认 on + 用户 opt-out. 任何 `std::thread([&]{ cin >> ... })` 都应审视此风险.
+
 ### 治理层 (Governance)
 
 #### 5. 跨多树相同测试目标的 helper 双维护策略
@@ -227,6 +253,7 @@ HydraForge/
 - **2026-09-08**: Phase B SIGSEGV 调试 (gdb + 消除实验) 沉淀模式 3 (断言分层) + 异常隔离 §NOTES 扩展.
 - **2026-08-04**: chat-real-llm-coverage ship 沉淀 `helper 三态分离` (模式工程层).
 - **2026-07-22**: skill-interpreter-real-loading 沉淀 `Recording Provider 守卫` 模式.
+- **2026-09-09**: ChatSession TTY stdin 死锁案例 (5 timeout 测试 + `script` PTY 复现 + 1 文件默认翻转 + 2 测试显式开启) 沉淀模式 5 (默认值 fail-safe: stdin 阻塞死锁).
 
 ## BUILD SYSTEM
 - CMake 3.20+，C++20

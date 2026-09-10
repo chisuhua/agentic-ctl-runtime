@@ -43,7 +43,14 @@ struct SessionConfig {
     std::string persist_dir = "~/.hydraforge/sessions/";
     int compact_threshold_tokens = 8000;
     bool branch_on_user_request = true;
-    bool enable_input_thread = true;  // single-reader mode (chat-async-io-consumer-loop)
+    // ⚠️ 2026-09-09 默认值从 true 改为 false (fail-safe):
+    // 默认 true 会导致所有用 SessionConfig{} 构造 ChatSession 的测试
+    // 启动 stdin 读取线程 (input_thread_main → std::getline(std::cin)),
+    // 在交互终端 (stdin=TTY) 下永久阻塞 → 测试死锁 → ctest TIMEOUT kill
+    // (60s/120s 都救不了, 用户实测). 生产入口 main.cpp:447 已显式
+    // enable_input_thread = true (single-reader mode), 不受影响.
+    // 需要 stdin 的测试显式置 true (见 test_chat_session_queues.cpp).
+    bool enable_input_thread = false;  // single-reader mode (chat-async-io-consumer-loop)
 };
 
 struct PluginConfig {

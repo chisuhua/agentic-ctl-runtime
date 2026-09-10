@@ -50,7 +50,11 @@ TEST_CASE("input thread joins on destruction", "[chat_session][queue][thread]") 
   // Set EOF on cin to unblock input thread before destruction
   std::cin.setstate(std::ios::eofbit);
   {
-    ChatSession session(nullptr, nullptr, nullptr, {}, {});
+    // ⚠️ 显式开启 input thread (默认已改 false, 见 chat_session.h):
+    // 本 case 专门验证 input_thread_main 在 EOF 下正常退出 + join.
+    SessionConfig cfg;
+    cfg.enable_input_thread = true;
+    ChatSession session(nullptr, nullptr, nullptr, {}, cfg);
   }
   SUCCEED("input thread joined without hanging");
 }

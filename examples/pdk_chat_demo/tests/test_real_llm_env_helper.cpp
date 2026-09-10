@@ -67,7 +67,9 @@ TEST_CASE("helper: real_llm_config fields correct with DEEPSEEK_API_KEY",
   // skip 不需调用, key 已 set → 直接调用 config
   auto cfg = pdk_chat_demo::testing::real_llm_config();
   REQUIRE(cfg.provider == "deepseek");
-  REQUIRE(cfg.model == "deepseek-v4-flash");
+  // ⚠️ 模型名变更 2026-09: deepseek-v4-flash → deepseek-chat. 详见
+  //   examples/pdk_chat_demo/tests/test_helpers/real_llm_env.h 注释.
+  REQUIRE(cfg.model == "deepseek-chat");
   REQUIRE(cfg.api_url == "https://api.deepseek.com");
   REQUIRE(cfg.api_key == "test_deepseek_key_xyz");
   REQUIRE(cfg.api_key_env == "DEEPSEEK_API_KEY");
