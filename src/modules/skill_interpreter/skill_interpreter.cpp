@@ -672,6 +672,13 @@ class SkillInterpreter::Impl {
       return IPCResponse{false, nullptr, "llm_generate not allowed"};
     }
 
+    // Oracle bg_e3787930 观察 #1: early-exit on cancelled token (防御性).
+    // 避免在 token 已 cancel 时还调用 llm_->generate (依赖 provider 自觉检查).
+    // 对 well-behaved provider 等价, 对不响应 token 的 provider 是强保证.
+    if (token.stop_requested()) {
+      return IPCResponse{false, nullptr, "cancelled before llm_generate"};
+    }
+
     std::string prompt = req.params.value("prompt", "");
     // V1 简化：使用 generate() 同步接口
     // V2 可扩展为流式

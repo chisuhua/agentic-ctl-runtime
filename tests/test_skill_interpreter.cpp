@@ -319,6 +319,48 @@ TEST_CASE("7.8d dispatch_llm_generate forwards external stop_token to LLM",
     cleanup_file(skill);
 }
 
+// === Test 7.8e (Oracle bg_e3787930 follow-up #1): dispatch_llm_generate early-exit ===
+// pre-cancelled token → dispatch_llm_generate 应立即返回 "cancelled before llm_generate"
+// 错误 (不调用 llm_->generate, generate_calls 仍为 0). 这是防御性 early-exit,
+// 对不响应 token 的 provider 是强保证 (well-behaved provider 本来就会立即返回 Cancelled).
+// 回归守卫: 未来删 early-exit → 测试会 llm_->generate 路径触发不同结果 (Cancelled
+// provider response) → 但因 generate_calls 仍为 0, 需配合 mock 设计才能区分.
+TEST_CASE("7.8e dispatch_llm_generate early-exits on cancelled token",
+          "[skill_interpreter][token][early-exit][realllm-followup]") {
+    MockToolRegistry tools;
+    test::MockBus bus;
+    auto recorder = std::make_unique<RecordingLLMProvider>();
+    recorder->result.text = "ok";
+    auto* raw = recorder.get();
+    SkillInterpreter interpreter(tools, bus, raw, nullptr);
+
+    std::string skill = create_temp_skill(
+        "---\n"
+        "name: early-exit-test\n"
+        "version: 0.1\n"
+        "description: test early-exit on cancelled token\n"
+        "---\n"
+        "llm_generate({\"prompt\": \"hi\"})\n");
+    REQUIRE(!skill.empty());
+
+    SkillCapability cap;
+    cap.allow_llm = true;
+    cap.max_steps = 10;
+    cap.timeout_ms = std::chrono::milliseconds(30000);
+
+    // pre-cancel: dispatch_llm_generate 应 early-exit, 不调用 llm_->generate.
+    std::stop_source ss;
+    ss.request_stop();
+    auto result = interpreter.run(skill, cap, ss.get_token());
+
+    // 核心契约: llm_->generate 未被调用 (early-exit 拦截前)
+    REQUIRE(raw->generate_calls == 0);
+    // Wave 4 #3 loop-top check 也会 SIGKILL → result.error_code == Abort
+    REQUIRE(result.error_code == ErrorCode::Abort);
+
+    cleanup_file(skill);
+}
+
 // === Test 7.8c (fix-skill-interpreter-token-and-timeout P1): mid-run cancel ===
 // 另一线程在子进程阻塞期间 request_stop(). 验证 poll timeout clamp (≤100ms)
 // 使 cancel 在 200ms 内被检测, 不等满 cap.timeout_ms = 30s.
