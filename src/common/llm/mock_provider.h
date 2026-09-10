@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <queue>
 #include <string>
@@ -112,14 +113,23 @@ std::vector<ModelInfo> available_models() const override;
 
    // === 测试断言辅助 ===
 
-  /// 获取所有调用历史（按调用顺序）
-  const std::vector<GenerationRequest>& call_history() const { return history_; }
+   /// 获取所有调用历史（按调用顺序）
+  const std::vector<GenerationRequest>& call_history() const {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    return history_;
+  }
 
   /// 获取总调用次数
-  int call_count() const { return static_cast<int>(history_.size()); }
+  int call_count() const {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    return static_cast<int>(history_.size());
+  }
 
   /// 清空调用历史
-  void clear_history() { history_.clear(); }
+  void clear_history() {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    history_.clear();
+  }
 
 private:
   /// 返回下一个响应（优先队列，其次 fixed_response_）
@@ -131,7 +141,15 @@ private:
   std::queue<GenerationResult> response_queue_;
   std::optional<GenerationResult> fixed_response_;
   std::vector<std::string> stream_tokens_;
+  // ⚠️ NOT redundant: history_ 保护 — 多线程并发 push_back 触发
+  //   std::vector::push_back 非线程安全 (realloc 时其他线程持有旧 buffer
+  //   指针悬空 → glibc "double free or corruption (out)" → SIGABRT).
+  //   实测触发: test_domain_worker_pool.cpp:629 "RateLimited handled gracefully"
+  //   4 worker 线程并发 provider->generate() 全部走 history_.push_back,
+  //   flake 率 40% (5 次跑 3 PASS / 2 FAIL). 修复后 flake 归零.
+  //   见 tests/AGENTS.md §REAL-LLM TEST PATTERNS #3 同类问题诊断.
   std::vector<GenerationRequest> history_;
+  mutable std::mutex history_mutex_;
 
   std::optional<LLMError> simulated_error_;
 std::chrono::milliseconds delay_{0};

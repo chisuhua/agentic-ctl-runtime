@@ -147,6 +147,32 @@ function(add_catch_test TEST_NAME)
         endif()
     endif()
 
+    # Real LLM tests need longer timeout (DeepSeek API call 10-30s, retries multiply).
+    # Per-test TIMEOUT overrides `ctest --timeout N` so user can keep default 20s
+    # without killing slow network tests. 60s covers 3-retry plan_execute_loop worst case.
+    # Affected: 2026-09-09 20s-timeout audit — 8 tests timeout, 2 flakes (Failed not Timeout).
+    set(_REALLLM_TIMEOUT_TESTS
+        test_cognitive_worker
+        test_session_writer_eventlog_integration
+    )
+    list(FIND _REALLLM_TIMEOUT_TESTS "${TEST_NAME}" _idx)
+    if(_idx GREATER -1)
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
+    endif()
+
+    # test_plan_execute_realllm: 3 TEST_CASE × (plan_phase + execute_phase + verify_phase)
+    # × retry up to 3 times = worst case 12 deepseek API calls.
+    # DeepSeek API 单次 10-30s, 含 reasoning 模式 → 需 180s+
+    if(TEST_NAME STREQUAL "test_plan_execute_realllm")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 180)
+    endif()
+
+    # Real LLM stress test: 8 workers × 20 deepseek tasks = 160 API calls
+    # SerializingDecorator 串行化 → 需 300s+ (单次 API 1-2s × 160 = 160-320s + 重试开销)
+    if(TEST_NAME STREQUAL "test_cloud_adapter_multithread")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 300)
+    endif()
+
     # test_async_bridge 仅链接 Taskflow (C2 Day 1-2 移除 async_simple, ADR-0030 V2 决策)
     if(TEST_NAME STREQUAL "test_async_bridge")
         target_link_libraries(${TEST_NAME} PRIVATE Taskflow)

@@ -89,7 +89,10 @@ void MockLLMProvider::reset() {
    }
    fixed_response_.reset();
    stream_tokens_.clear();
-   history_.clear();
+   {
+     std::lock_guard<std::mutex> lock(history_mutex_);
+     history_.clear();
+   }
    simulated_error_.reset();
    delay_ = std::chrono::milliseconds{0};
    test_models_.clear();
@@ -113,8 +116,11 @@ GenerationResult MockLLMProvider::next_response() {
 
 Result<GenerationResult, LLMError>
 MockLLMProvider::generate(const GenerationRequest& req, std::stop_token token) {
-  // 记录调用历史
-  history_.push_back(req);
+  // 记录调用历史 — history_mutex_ 保护 (见 header 注释).
+  {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    history_.push_back(req);
+  }
 
   // 模拟延迟
   if (delay_.count() > 0) {
@@ -143,8 +149,11 @@ MockLLMProvider::generate(const GenerationRequest& req, std::stop_token token) {
 std::unique_ptr<IGenerationStream>
 MockLLMProvider::generate_stream(const GenerationRequest& req,
                                   std::stop_token token) {
-  // 记录调用历史
-  history_.push_back(req);
+  // 记录调用历史 — history_mutex_ 保护 (见 header 注释).
+  {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    history_.push_back(req);
+  }
 
   // 模拟延迟（流式接口不支持错误注入错误返回，由调用方检测空流）
   if (delay_.count() > 0) {
