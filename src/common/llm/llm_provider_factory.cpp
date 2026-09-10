@@ -1,5 +1,6 @@
 #include "common/llm/llm_provider_factory.h"
 
+#include <iostream>
 #include <mutex>
 
 #include "common/llm/cloud_adapter.h"        // CloudLLMAdapter (OpenAI 兼容协议)
@@ -111,6 +112,8 @@ std::unique_ptr<ILLMProvider> LLMProviderFactory::create(const LLMConfig& config
     // ADR-0087 Step 4 (Sprint 27): root cause 升级 ship 后, 默认无 SerializingDecorator.
     // opts.serializer = true 显式启用 (诊断 + 紧急降级).
     if (opts.serializer) {
+      std::cerr << "[llm_provider_factory] WARNING: opts.serializer=true 启用 SerializingDecorator (mutex 串行化, 牺牲并发换取零 SIGSEGV 兜底);"
+                << " 用于诊断 httplib/OpenSSL 退化或紧急降级, 生产默认 false." << std::endl;
       return std::make_unique<SerializingDecorator>(
           std::move(adapter), "cloud-" + backend);
     }

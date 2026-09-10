@@ -1,11 +1,13 @@
 // tests/test_cloud_adapter_multithread.cpp
 // 文件头注释
-// 功能描述：CloudLLMAdapter 多线程 SIGSEGV 回归守卫（Wave 1 #2）
-//          真实 deepseek 多 worker 并发, 验证 SerializingDecorator 修复有效
-//          8 worker × 20 task = 160 calls 真实 LLM, 零 SIGSEGV 期望
-// 设计依据：openspec/changes/fix-cloud-adapter-multithreading/design.md §Stress
-// 作者：AgenticDSL Wave 1 #2
-// 最后修改日期：2026-09-08
+// 功能描述：CloudLLMAdapter 多线程 SIGSEGV 回归守卫
+//          ADR-0087 Step 4 (Sprint 27): root cause 升级 (OpenSSL 3.0 +
+//          httplib 0.54.1) ship 后, factory 默认无 SerializingDecorator.
+//          本测试 8 worker × 20 task = 160 calls 真实 deepseek 直连验证
+//          root cause fix 有效 (无 SIGSEGV, ~4× 加速可达)
+// 设计依据：openspec/changes/adr-0087-root-cause-upgrade/design.md §Decision 3
+// 作者：AgenticDSL Wave 1 #2 (orig) + Sprint 27 Step 4 (annotation refresh)
+// 最后修改日期：2026-09-11
 
 #include "catch_amalgamated.hpp"
 

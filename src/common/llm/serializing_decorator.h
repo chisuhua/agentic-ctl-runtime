@@ -6,10 +6,12 @@
 //          → httplib::Client::Post create_client_socket 栈 corruption
 //          修复: 工厂层为 cloud 路径注入 SerializingDecorator,
 //          用 std::mutex + std::condition_variable 串行化 generate/generate_stream
+//          ADR-0087 Step 4 (Sprint 27): 升级后改为 OPT-IN 降级开关 (默认不注入,
+//          opts.serializer = true 显式启用, 见 LLMProviderFactory::CreateOptions)
 // 设计依据：openspec/changes/fix-cloud-adapter-multithreading/design.md
-//          ADR-0087 (Cloud adapter threading model) follow-up
+//          + openspec/changes/adr-0087-root-cause-upgrade/design.md §Decision 3
 // 作者：AgenticDSL Wave 1 #2 (post-real-llm-core-coverage Phase B SIGSEGV)
-// 最后修改日期：2026-09-08
+// 最后修改日期：2026-09-11
 
 #ifndef AGENTICDSL_LLM_SERIALIZING_DECORATOR_H
 #define AGENTICDSL_LLM_SERIALIZING_DECORATOR_H
