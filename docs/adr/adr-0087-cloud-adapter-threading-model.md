@@ -209,47 +209,97 @@ if (backend == "openai" || ...) {
    - `cloud_adapter.cpp` **0 行 OpenSSL 代码** (所有 SSL 操作封装在 httplib 内)
    - 不需要任何代码改动
 
-2. **§Step 2 (httplib 升级 for threading) — 假设失效,已隐式完成**
+2. **§Step 2 (httplib 升级 for threading) — 假设失效,真根因未明**
    - 真实 threading SIGSEGV fix = **PR #701** (merged Nov 29, 2020)
    - shipped in **v0.8.0 (Jan 12, 2021)**
-   - 当前 vendored 0.18.4 **已含 PR #701** (line 1507-1509 `socket_requests_in_flight_` + line 8940-8968 `ssl_new` with `ctx_mutex_` + line 7477 `request_mutex_` + line 663 `authorization_count_`)
+   - 当前 vendored 0.18.4 **已含 PR #701** ([Oracle 修订]: `socket_requests_in_flight_` L1507-1509 + `ssl_new` with `ctx_mutex_` L8940-8968 + `request_mutex_` L1504 [原调研行号 L7477 漂移已修正] + `authorization_count_` L663)
+   - **但 SIGSEGV 在含 PR #701 的 0.18.4 上仍被观测** (c0cb522 Phase B ship 实证) ⇒ **PR #701 存在不证明根因已修**,真根因未明
    - handoff §3.2 提到的 issue #1903 **与 threading 无关** (Windows file size 32-bit bug)
+   - gdb backtrace (`create_client_socket` + `std::function<void(int)> this=0x11`) 指向 `ClientImpl::socket_options_` 损坏/use-after-free,与 PR #701 类 race 不一致
 
-3. **§根因诊断混淆独立 issues** — ADR §根因诊断 (line 82-84) 混用 PR #701 (threading) 与 issue #1903 (Windows file size),需修订澄清
+3. **§根因诊断偏差** — ADR §根因诊断 (line 82-84) "Authorization header 栈处理 bug" 假设**未引用 issue 编号**,且未与 PR #701 关联;准确表述为"两条假设均未证实,仅 2020 年代 race 可排除"
 
-4. **🚨 新发现 CVE-2026-33745 (GHSA-6hrp-7fq9-3qv2)** — Critical security
-   - Auth credentials leaked on cross-origin redirect (`set_follow_location(true)` + 401 + redirect → Authorization header leaked to third-party)
-   - Fixed in **v0.39.0**
-   - 当前 0.18.4 **未含此 fix**
-   - 本项目 `cloud_adapter.cpp` **当前未使用** `set_follow_location(true)` → **未触发**,但**未来引入风险高**
+4. **🚨 多 client 侧 security advisories (Oracle 补充)**:
+   - **CVE-2026-33745** (GHSA-6hrp-7fq9-3qv2, **High CVSS 7.4** [原 Critical 误标已修正]): Auth credentials leaked on cross-origin redirect; fixed in v0.39.0; 当前 0.18.4 未含
+   - **GHSA-39q5-hh6x-jpxx** (High, 2026-03-10): 恶意 Content-Length 响应头使 client 进程崩溃;fixed in 后续版本;**cloud_adapter 直接暴露**
+   - **GHSA-h6wq-j5mv-f3q8** (Moderate, 2026-05-12): 负 chunk-size DoS;**LLM streaming 直接暴露** (`generate_stream` 走 chunked transfer)
+   - **GHSA-c3h8-fqq4-xm4g** (High conditional, 2026-03-13): proxy 下 HTTPS redirect TLS bypass;**当前未触发**(项目不用 proxy)
+   - **覆盖建议**: 升级至 v0.54.1 (latest stable, 2026-08-30) 一次性覆盖 4/4 advisories
 
-**Sprint 25 范围重定位建议**:
+### Oracle 评审 (2026-09-10) — SHIP-with-fixes
 
-| 原计划 | 建议改为 | 理由 |
+**评审 session**: `ses_f760c60d5ffe9hmgREbWz0hA8u` (Oracle 5m17s)
+
+**结论**: 方向 ✅,升级目标 v0.39.0 **不足**,需 3 High + 3 Medium 修正后启动 Sprint 25。
+
+**修正清单** (已应用):
+
+**High (已完成)**:
+- **H1**: 升级目标 v0.39.0 → **v0.54.1** (覆盖 4/4 client 侧 advisories)
+- **H2**: 严重度 Critical → **High (CVSS 7.4)** (修订审计 + ADR)
+- **H3**: 删除"已含所有 threading fix / 无需升级即获 threading 安全"自相矛盾表述,改为"PR #701 修复的 2020 年代 race 已排除,真根因未明,21 版本累积修复可能覆盖"
+
+**Medium (已完成)**:
+- **M1**: 升级爆炸半径扩展 — httplib 使用点 = **6 个文件**:
+  - 生产: `src/common/env/docker_backend.cpp:12` (Docker over Unix socket Client) + `src/common/llm/cloud_adapter.cpp:15` (HTTPS + Authorization Client) + `src/common/llm/http_adapter.cpp:10` (HTTP Client)
+  - 测试: `tests/test_helpers/http_mock_server.h:8` + `tests/test_http_adapter.cpp:7` + `tests/test_docker_backend.cpp:28`
+  - **Headers 迭代器构造** 模式需验证 v0.52.0 后兼容 (cloud_adapter L250, http_adapter L172)
+  - **`set_follow_location` 0 处使用** ✅ 当前安全
+  - **Sprint 25 回归 scope**: test_docker_backend + test_http_adapter + test_cloud_adapter_multithread
+- **M2**: Sprint 26 实证方案补强 — **HTTPS + Authorization + chunked streaming 路径 + TSan preset + ≥3 次重复**(单次 green 不构成证据)
+- **M3**: 升级前置验证 — vendored httplib.h (SHA256 `ca2fc115558d72942b3235afb35759a7056146cc55cf38063ea5645517024066`, 10325 行) **零本地 patch 标记**(grep TODO/FIXME/HydraForge/@local 0 命中);非 git submodule,需手动 diff vs upstream v0.18.4 tag 实证零漂移
+
+**Low (已完成)**:
+- **L1**: 审计行号漂移 — `request_mutex_` 实际声明在 L1504 (L7477 是 lock_guard 使用点);"0.18.4 稳定 4+ 年"不实 (0.18.x 是 2025 年版本)
+- **L2**: `set_follow_location` CI grep 守卫 — 加入 Sprint 25 scope (`grep -rn "set_follow_location" src/ pdk/ examples/ tests/` 必须为空)
+
+### Sprint 25 范围重定位建议 (Oracle 修正版)
+
+| 原计划 | 建议改为 (Oracle 修正) | 理由 |
 |--------|---------|------|
 | §Step 1 OpenSSL 3.0 集成 (1-1.5 天) | **删除** | 0 LOC,已隐式完成 |
-| §Step 2 httplib 升级 for threading (1-1.5 天) | **保留框架,替换理由** — 升级 to v0.39.0+ for **CVE-2026-33745 security** | Threading 已隐式完成,security 是新优先 |
+| §Step 2 httplib 升级 v0.39.0+ for **CVE-2026-33745** (1-1.5 天) | **httplib 升级 0.18.4 → v0.54.1** (覆盖 4/4 client 侧 advisories, 1-2 天) | v0.39.0 仅覆盖 1/4 advisories;v0.54.1 一次性覆盖 + 21 个版本累积 bug fixes |
 
-**Sprint 26 实证方案 (待启动)**:
+### Sprint 26 实证方案 (Oracle 补强版)
 
-1. 升级 httplib 到 v0.39.0+ (含 CVE fix)
+1. 升级 httplib 到 v0.54.1 (前置 Sprint 25)
 2. 暂时移除 SerializingDecorator 默认包装 (`llm_provider_factory.cpp:102-114`)
-3. 跑 8 worker × 20 task stress (`test_cloud_adapter_multithread.cpp`)
-4. 跑 Phase E Skill IPC + Phase G ContextCompactor (多 worker 真并发)
-5. **如果零 SIGSEGV** → §Decision 1 "默认包装" 可移除,SerializingDecorator 真正 OPT-IN
-6. **如果仍 SIGSEGV** → 真根因更细 (chunked transfer? stream parser?), 需 gdb 重诊断 (类似 c0cb522 Phase B 流程)
+3. 跑 8 worker × 20 task stress (`test_cloud_adapter_multithread.cpp`),**必须 HTTPS + Authorization 真实路径**
+4. **TSan preset + ≥3 次重复**(SIGSEGV 是概率事件,单次 green 不构成证据)
+5. 跑 Phase E Skill IPC + Phase G ContextCompactor (多 worker 真并发) 同样覆盖
+6. **如果零 SIGSEGV** → §Decision 1 "默认包装" 可移除,SerializingDecorator 真正 OPT-IN
+7. **如果仍 SIGSEGV** → httplib 0.54.1 后根因更细,需 gdb 重诊断 (类似 c0cb522 Phase B 流程)
+8. **Decision 3 opts.serializer 保持可逆** — 任何时刻可手动开启降级
 
-**GO/NO-GO 决策**: **🟢 GO (修订后)** — Sprint 25 重定位至 httplib v0.39.0+ 升级 (security),无需 OpenSSL 集成。Sprint 26 启动真根因实证。
+### Sprint 27-28 (不变)
 
-**未解问题** (per handoff §7):
+- Sprint 27: 移除默认 SerializingDecorator + Decision 3 OPT-IN 落地
+- Sprint 28: 4 worker benchmark (~12s → ~3s) + ADR-0087 ✅ Approved
+
+### GO/NO-GO 决策
+
+**🟢 GO (修订后)** — Sprint 25 重定位至 httplib **v0.54.1** 升级 (4/4 client 侧 advisories),无需 OpenSSL 集成。Sprint 26 启动真根因实证 (Oracle 补强 HTTPS+TSan+重复方案)。
+
+### 未解问题 (per handoff §7 + Oracle 补充)
+
 - ✅ Q1 OpenSSL 3.0 ABI break 影响面 = 0 LOC (回答: 0)
-- ✅ Q2 httplib upstream fix 是否已 merged = 是 (PR #701, in v0.8.0+)
-- 🆕 Q2-extra httplib security CVE-2026-33745 fix 在 v0.39.0 (新发现,优先级更高)
-- ⏳ Q3 4 worker benchmark 预期 ~4× 加速 — 待 Sprint 28 实证 (基准测试前置 v0.39.0 升级)
-- ✅ Q4 是否需同步升级 `external/async_simple/demo_example/CMakeLists.txt` OpenSSL 引用 = 否 (该引用是 demo 路径,不参与生产 cloud LLM)
-- 🆕 Q6 (新) Sprint 25 升级 httplib 时是否需要 fork upstream PR — 否,直接用 v0.39.0 official tag
+- ✅ Q2 httplib upstream fix 是否已 merged = 是 (PR #701, in v0.8.0+);**但 PR #701 存在不证明根因已修** (Oracle 修订)
+- 🆕 Q2-extra httplib 4 个 client 侧 security advisories — v0.54.1 覆盖 (Oracle 补充)
+- ⏳ Q3 4 worker benchmark 预期 ~4× 加速 — 待 Sprint 28 实证 (前置 v0.54.1 升级)
+- ✅ Q4 是否需同步升级 `external/async_simple/demo_example/CMakeLists.txt` OpenSSL 引用 = 否 (demo 路径)
+- 🆕 Q6 (新) Sprint 25 升级 httplib 时是否需要 fork upstream PR — 否,直接用 v0.54.1 official tag
+- 🆕 Q7 (新) 是否需要为 httplib v0.52.0 `Headers` insertion-ordered ABI break 做适配 — 待 Sprint 25 实施前编译验证 (本项目用法面窄,预计无影响)
+- 🆕 Q8 (新) 是否需要为 v0.53.0 `WebSocketClient::connect` 返回 `ws::Result` 做适配 — **不需要**(本项目未用 WebSocket)
+- 🆕 Q9 (新) 是否还有其他未发现的 client/server-side CVE 在 v0.54.1 之后发布 — **低概率**(已订阅 httplib security advisories 列表, set_follow_location grep 守卫覆盖 CVE-2026-33745)
 
-**ADR-0087 状态**: 🔍 Proposed → 🟡 Partial (调研完成,根因诊断修订)
+### ADR-0087 状态演进
+
+| 日期 | 状态 | 触发 |
+|------|------|------|
+| 2026-09-08 | 🔍 Proposed | ADR 创建 (Wave 1 #2 ship 后) |
+| 2026-09-10 (commit `26749c2`) | 🟡 Partial | Sprint 24 调研完成,根因诊断修订 |
+| 2026-09-10 (本 commit) | 🟡 Partial | Oracle 评审 High/Medium/Low 修正应用 |
+| 2026-09-XX (待) | 🟡 Partial → ✅ Approved | Sprint 25 升级 ship + Sprint 26 实证后 |
 
 ---
 
