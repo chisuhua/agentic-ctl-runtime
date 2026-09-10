@@ -17,10 +17,18 @@ class LLMProviderFactory : public IProviderFactory {
   using DynamicFactoryFn =
       std::function<std::unique_ptr<ILLMProvider>(const LLMConfig&)>;
 
+  // ADR-0087 root cause 升级后, cloud 路径默认无 SerializingDecorator (OPT-IN 降级开关)
+  struct CreateOptions {
+    bool serializer = false;
+  };
+
   LLMProviderFactory();
   ~LLMProviderFactory() override = default;
 
   std::unique_ptr<ILLMProvider> create(const LLMConfig& config) override;
+
+  std::unique_ptr<ILLMProvider> create(const LLMConfig& config,
+                                       const CreateOptions& opts);
 
   bool register_dynamic(std::string name, DynamicFactoryFn factory_fn);
   bool switch_default(const std::string& name);
