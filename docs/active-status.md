@@ -15,10 +15,10 @@
 
 | 维度 | 状态 |
 |------|------|
-| **Total ctest** | **230/230** 配置总数 (2026-09-10 `ctest -N` → Total Tests: 230; 自 2026-09-08 校准后 +2: Sprint 25 upgrade-httplib-0541 +1 test binary (test_httplib_version, 2 cases) + 2026-09-10 adr-0037-causal-ordering-completion +1 test binary (test_causal_ordering, 9 cases); 228/228 → 229 → 230 PASS baseline, 1 pre-existing FAIL `test_cognitive_worker` 与本 change 无关) — ✅ Wave 1 #1+#2 real-llm P0 followups + Wave 2 Phase C ship 完成, ctest baseline 211 → 228 (+17) → 229 (+1) → 230 (+1) |
+| **Total ctest** | **230/230** 配置总数 (2026-09-11 `ctest --test-dir build` → Total Tests: 230; 自 2026-09-08 校准后 +2: Sprint 25 upgrade-httplib-0541 +1 test binary (test_httplib_version, 2 cases) + 2026-09-10 adr-0037-causal-ordering-completion +1 test binary (test_causal_ordering, 9 cases); 2026-09-11 Sprint 27 cognitive_worker fix (5a09c76) +1 回归守卫 TEST_CASE; 228/228 → 229 → 230 → **231/231 PASS** baseline, **0 FAIL**) — ✅ Wave 1 #1+#2 real-llm P0 followups + Wave 2 Phase C ship + Wave 4 token passthrough + Sprint 27 ADR-0087 step 4 ship + cognitive_worker 真实 LLM 依赖 fix 完成 |
 | **ASan** | **92/93** (2026-07-31 复验, `build/asan/`) — `test_skill_interpreter` 失败: 无 AddressSanitizer 内存错误报告, 断言级失败 (`result.success=false`, posix_spawn child 在 ASan 构建下未执行成功), debug 构建下同测试通过 → 定性 **ASan-only pre-existing 功能失败**, 建议独立跟踪修复。注: ASan 构建树测试总数 93 (debug 树 106, 13 个示例/集成测试未纳入 ASan 配置) |
 | **TSan** | 超时跳过 (机器性能受限) |
-| **OpenSpec active** | **1** (2026-09-07 update: +1 `chat-async-io-consumer-loop` 自 2026-09-03 Sprint 25 收官以来; 原 0 (Sprint 25 收官: `adr-0072-flip-to-partial` ✅ archived + `control-plane-eval-c2-alignment` ✅ archived + `baseline-retest-wait-condition` ✅ archived + `adr-0072-d4-backend-parser` ✅ archived + `adr-0072-d1-stream-true-parser` ✅ archived + `adr-0042-state-alignment` ✅ archived; 6 个 Sprint 25 governance + parser changes 全 ship + archived); carry-over: 真实 3 模型 baseline 重测 + Phase 7a 启动评估 + ADR-0072 阶段 B IStreamHandle + ADR-0072 D6) — **`chat-async-io-consumer-loop`** 闭合 chat-async-io queue infra (d4fcca1) 的 producer-consumer loop，修复 pdk_chat_demo stdin race + dead-producer bug (2026-09-07 现场复现)；4 轮 Oracle 审查通过（R1→R4 PASS, session `ses_f83a3299cffe4iP6NPeRXPbNja`）；Self-Review issue #20 OPEN；cooling-off 2026-09-08 16:39 CST 后 ship |
+| **OpenSpec active** | **6** (2026-09-11 Sprint 27 收官更新):<br/>1. `2026-09-10-kernel-timer-service` (Draft, 排期 Sprint 28, P0 - microkernel 蓝图唯一短期可执行项, Oracle `ses_f741f5d05ffeItVmfYVEjr67m3` 评审通过)<br/>2. `adr-0087-root-cause-upgrade` (Draft parent, **Sprint 27 step 4 已 ship** — `de79309` + `9d6d6a6` + `bd1c893` + `a146711` merged to main; step 5 benchmark + OPT-IN 文档待真实 baseline 触发)<br/>3. `chat-real-llm-coverage` (Draft, 等真实 baseline 重测触发信号 — `docs/runbooks/baseline-retest.md` §1)<br/>4. `cloud-adapter-threading-root-cause` (Draft scaffold, ADR-0087 Step 1-2 调研已完成)<br/>5. `real-llm-core-coverage` (Phase A+B ship, Phase C-G 等 step 4 ship 后启动, Sprint 27 step 4 已解锁)<br/>6. `skill-interpreter-ipc-realllm` (Draft, 依赖 step 4 ship — 已满足, 待 5-sprint 排期) |
 
 ## §Sprint 25 收官注记 (2026-09-03, 治理收官 Sprint)
 
@@ -89,6 +89,26 @@
 | **Phase 5** | ✅ 收官 (C9-C18 全部 ✅ shipped + archived) |
 | **Phase 6** | 🟡 服务化暂缓 (Candidate B 启动条件 🔒 4/4 未满足); Phase 6a (PDK 生产化) 启动评估 ready (Wave 3-A 完成提供前置); **Phase 6c 已收官 (2026-09-02)**; **Phase 6c C1+C2+C3 `from-roadmap-phase-6c-execution-baseline` ✅ ship 2026-08-18** (ADR-0074 D1/D2/D3 V1/V2/V3 prompt builders + 32 few-shot + 54 golden + measure_prompt_baseline CLI, ADR-0074 🔍 Proposed → ✅ Approved, baseline 数据 handoff to evidence-gate); **Phase 6c C9 `from-roadmap-phase-6c-schema-complete` ✅ ship 2026-08-18** (ADR-0073 D3 ToolCoordinator 4 步校验层落地, ADR-0073 🟡 Partial → ✅ Approved); **Phase 6c C11-C13 `from-roadmap-phase-6c-execution-envbackend` ✅ ship 2026-08-18** (ADR-0075 D1+D2+D3+D5 全 ship, ADR-0075 🔍 Proposed → ✅ Approved) |
 | **架构规范** | `docs/specs/architecture.md` = 五层模型 (原 v1.2 晋升, **D1 决议 2026-07-31**)；v2.2 八层规范已归档。**D1b 宣告**: "第二大脑"产品愿景 (Persona/Contract/ZK/App Market/brain-frontend) 自 2026-07-31 起正式归档, 不构成当前路线图承诺 |
+
+---
+
+## §Sprint 27 收官注记 (2026-09-11, ADR-0087 root cause + 真实 LLM 依赖 fix Sprint)
+
+**战略定位**: Sprint 27 = ADR-0087 (🔍 Proposed → 🟡 Partial) cloud adapter 多线程 SIGSEGV root cause 升级 5-step 路径第 4 步 ship + 真实 LLM 测试依赖的关键 bug fix + microkernel 蓝图短期可执行项排期顺延。
+
+**4 项 ship + 1 项排期顺延**:
+
+| # | Change / 修复 | 类型 | Commit(s) | 说明 |
+|---|---------------|:---:|-----------|------|
+| 1 | **ADR-0087 step 4** 移除默认 SerializingDecorator | P0 (LLM 业务) | `de79309` + `9d6d6a6` + `bd1c893` + `a146711` | CloudLLMAdapter cloud 路径默认无 SerializingDecorator 包装; OPT-IN `opts.serializer=true` 降级路径保留 (诊断 + 紧急场景). Oracle SHIP-with-fixes 5 项修正全 applied. 4× 并发性能税去除. **Phase B B.2 / Phase E Skill IPC / Phase G ContextCompactor 多 worker 真并发路径解锁** |
+| 2 | **causal_ordering DomainWorkerPool flaky 修复** | P1 (测试稳定性) | `7e9c0a1` | ctest 并发场景下 A→B flaky test 修复 (per ADR-0037 causal clock) |
+| 3 | **cognitive_worker prompt 透传 fix** | P0 (真实 LLM 依赖) | `5a09c76` | submit_task 的 `task_id` 误传给 LLM → LLM 看到 "[user] task-id" → 自由发挥字段名 → echo 工具 `args.at("message")` 抛 unordered_map::at → 真实 LLM 测试 fail. 修复: `orch.process(task_id, ...)` → `orch.process(prompt, ...)`. **+1 回归守卫** TEST_CASE 用 `mock->call_history()` 验证 prompt 内容. 工程模式 #1 闭环(最小修复+注释+Recording 守卫) |
+| 4 | **kernel-timer-service 排期顺延** | 排期修订 | `66dd686` | `2026-09-10-kernel-timer-service` proposal/design/tasks Sprint 27 → Sprint 28. 原因: Sprint 27 容量被 ADR-0087 step 4 占用 (P0 业务), TimerService 是 microkernel 蓝图沉淀项 (无消费者, Oracle 评审通过). 早收官提前 2 周启动 |
+| 5 | **基础状态**: ctest 231/231 PASS 零回归 (含 1 回归守卫 + 1 existing worker_loop test) | — | — | L18 "1 pre-existing FAIL `test_cognitive_worker`" 漂移已修复 (7e9c0a1 + 5a09c76 联合) |
+
+**ADR-0087 root-cause-upgrade parent proposal 状态**: 🟡 Partial (step 4 ✅ ship + merged). step 5 (benchmark + OPT-IN 文档) 留在 parent proposal, 待真实 3 模型 baseline 触发信号 (`docs/runbooks/baseline-retest.md` §1) 启动.
+
+**Oracle session `ses_f6fe76438ffeM5q8z2tUXQ7lIQ` 后续建议**: P1 ✅ ship 后立即启动 P2 TimerService Sprint 28 实施 (本周剩余时间可完成 Task 1-3 接口 + TDD 红绿, Task 4-5 明日上午 temporal_agent 迁移 + 回归, Task 6-7 明日下午文档 + Oracle 复核). 总耗 ~1.5 天.
 
 ---
 
