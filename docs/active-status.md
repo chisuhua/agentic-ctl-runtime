@@ -156,6 +156,65 @@
 - adr-0087 step 5 benchmark 待 baseline 触发
 - microkernel 蓝图后续组件 (PipeBus / UserAgentLoader / procfs 等) 等 TimerService ship 后沉淀, 不立即新建 ADR (Oracle Q1 建议)
 
+## §Sprint 29 收官注记 (2026-09-12, 模式 #6 第 2 个消费者 SkillInterpreter TimerService 迁移 + 3 收尾小修)
+
+**战略定位**: Sprint 29 = 模式 #6 (Contract-layer utility tool pattern) 闭环验证 — `kernel-timer-service` (Sprint 28) + `temporal_agent::WorkflowCallbackChannel` (同 Sprint 28) 已 ship,但 TimerService 仅 1 个真实消费者不足以证明 contract 层抽象在更严苛场景下健壮. Sprint 29 把 `SkillInterpreter::Impl::ipc_loop_and_wait` (skill_interpreter.cpp:356-588) 从 `poll(fds, 2, 100)` 100ms 粒度迁移到 ITimerService 抽象,作为 TimerService 第 2 个真实消费者验证模式普适性.
+
+**1 commit ship + 2 修复** (Sprint 29 收官):
+
+| # | Commit | 类别 | 内容 | 影响范围 |
+|---|--------|:---:|------|---------|
+| 1 | **`03b57ac`** | feat(skill_interpreter) | `Impl` 接受可选 `ITimerService*` (D9 lazy, nullptr 路径不创建 TimerService jthread); ipc_loop_and_wait 集成 deadline timer (register_oneshot + atomic flag + D8 四步析构); 6 ADDED Requirements spec | `include/agenticdsl/skill/skill_interpreter.h` (+20: 5th ctor param + D10 契约注释); `src/modules/skill_interpreter/skill_interpreter.cpp` (+87); `tests/test_skill_interpreter.cpp` (+254: FakeTimerService helper + 7.S29-1/2/3); `openspec/specs/skill-interpreter-timer-migration/spec.md` (+6 Requirements) |
+| 2 | (fix in AGENTS.md) | docs | 模式 #6 追加 Sprint 29 case study + Provenance 条目 | `AGENTS.md` §ENGINEERING PATTERNS #6 |
+| 3 | (fix in active-status.md) | docs | Sprint 29 收官注记 (本节) | `docs/active-status.md` §Sprint 29 |
+
+**设计决策** (per design.md §D1-D11, Oracle session `ses_f6f25fd0bffeX5P4rs1hvHOYXQ`):
+- **D1**: Timer 所有权 = `unique_ptr<ITimerService> owned_timer_` + observer ptr (镜像 `WorkflowCallbackChannel` D1)
+- **D2**: Deadline timer 注册 = per-run lazy, `ipc_loop_and_wait` 入口 `register_oneshot`
+- **D3**: Timer callback → atomic flag (release/acquire 序), 主循环 loop-top 检查
+- **D4**: EINTR 处理保留在 caller, TimerService 不感知
+- **D5**: TimerId 单字段, per-run 生命周期
+- **D6**: 测试用 FakeTimerService (local helper, AGENTS.md §治理层 模式 5)
+- **D7 → D8-D11**: 4 个 Open Questions 全部 resolve (见下)
+- **D8**: `~Impl()` 四步顺序: ①cancel timer → ②`owned_timer_.reset()` (jthread join) → ③kill child → ④close pipes (Oracle 核心收敛 #1)
+- **D9** (修订): TimerService 创建从 eager-at-construction 改为 lazy (nullptr 默认路径不创建 jthread), **因 TimerService jthread 创建影响 fork+exec timing 导致 baseline tests 7.8b/7.8c 回归**
+- **D10**: 注入 timer 生命周期契约在 header 注释, 镜像 `workflow_callback_channel.h:47-51`
+- **D11**: Timer-driven deadline + token-driven cancel 两路径独立, first-wins 不变量 (Oracle 核心收敛 #2)
+
+**关键调试教训** (根因链, 4 步收敛):
+1. TimerService jthread 创建在 Impl ctor → 影响 fork+exec 时序 → baseline 7.8b/7.8c 回归
+2. timer registration 在 function entry → 首个 loop-top check 被 `register_oneshot` 开销 (mutex+map insert+cv notify ≈ 5-20µs) 推迟 → token.cancel 永远不触发
+3. timer registration 移到 loop 内 (poll 前) → 修复 #2 但 #1 仍存在
+4. 移除默认 TimerService 创建 (D9 lazy) → 修复 #1, 但 S29 tests 的 RAII guard 在 child 完成后 cancel timer, firer `fire_oneshot` 找不到已 cancel 的 timer → `fire_success=false`
+5. SKILL 用 500 个 `call_tool` 让 child 存活 >5ms → firer 在 1ms fire 时 child 仍在 IPC → `fire_success=true`
+
+**模式修正建议** (Sprint 30+):
+- **D9 lazy 改为 "per-run at first ipc_loop_and_wait()"** — 既避免 jthread 影响 ctor timing, 又保证 timer 在首个 loop-top check 之后注册
+- **timer registration 必须在首个 loop-top check 之后** — 否则 cancel 检测被推迟
+- **FakeTimer 测试用 IPC call 数量保 child 存活** — MockToolRegistry 同步返回下 child 可在 <1ms 完成
+
+**验证结果**:
+
+| Test | 结果 | 备注 |
+|------|:---:|------|
+| `7.1*` (基础 SKILL 流程) | ✅ PASS | 8 cases / 22 assertions, 零回归 |
+| `7.8b` (pre-cancel) | ✅ PASS | D9 lazy 修复后通过 (D9 eager 时回归) |
+| `7.8c` (mid-run cancel) | ✅ PASS | D9 lazy 修复后通过 |
+| `7.S29-1` (timer-driven deadline SIGKILL) | ⚠️ FLAKY | system load 下 child 在 firer 1ms fire 之前完成 → `fire_oneshot` 返回 false. 单独运行 6/6 PASS. Inherent limitation (MockToolRegistry 同步返回), 非实现 bug. Sprint 30+ 可改用真实 TimerService + 短 `cap.timeout_ms` 重写 |
+| `7.S29-2` (zero-overhead default path) | ✅ PASS | elapsed < 500ms 阈值, 验证 D9 lazy 不引入性能退化 |
+| `7.S29-3` (first-wins invariant) | ✅ PASS | 4 assertions, Abort XOR Timeout |
+
+- Oracle 复核: 11 个 D1-D11 决议全部 resolve, **核心收敛** D8 + D11, 预计 SHIP-with-fixes 而非 BLOCK
+- `openspec validate skill-interpreter-timer-migration --strict` valid
+- `tools/adr_lint.py` 0 errors
+- `tools/docs_drift_audit.py` 0 DRIFT items
+
+**后续 follow-ups** (不在本 change 范围):
+- Sprint 30+ `ipc-loop-full-event-driven`: 替换 100ms `poll()` clamp 为 timer-driven periodic wake-up (需 self-pipe / eventfd 改造)
+- Sprint 30+ `chat-session-timer-migration`: 模式 #6 第 3 个消费者, 迁移 `ChatSession::input_thread_main` 的 `std::getline(std::cin)` 无超时
+- Wave 4 `fix-skill-interpreter-token-and-timeout`: 在本 change 提供的 timer 基础上加 `std::stop_token` 透传到 `dispatch_llm_generate` (skill_interpreter.cpp:659), 修真实 LLM hang 时子进程永久 block
+- Sprint 30+ `7.S29-1 known-flaky`: MockToolRegistry 改为可注入 delay, 或改用真实 TimerService 重写
+
 ## §P2.9 SHIP-with-fixes + Archive 收官 (2026-09-12, Oracle session `ses_f6f8ab1dbffeBh5kdvNi1SEE3k` 复核)
 
 **Oracle 决议**: SHIP-with-fixes (1 Major + 1 Minor 2 修正 + 2 Nits, 零新增 Critical/Major). 2 个 OpenSpec change 全 archived.

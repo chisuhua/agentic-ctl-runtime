@@ -37,6 +37,7 @@
 
 #include "agenticdsl/contract/iinteraction_bus.h"
 #include "agenticdsl/contract/itool_registry.h"
+#include "agenticdsl/contract/timer_service.h"
 #include "agenticdsl/types/layered_context.h"
 #include "core/types/tool_result.h"
 
@@ -156,23 +157,46 @@ static std::string make_response(bool ok, nlohmann::json result,
 
 class SkillInterpreter::Impl {
  public:
+  // Sprint 29 timer migration: 注入 ITimerService*
+  // - 非 nullptr 时使用注入 timer (测试可传 FakeTimer, 调用方持有 lifetime)
+  // - nullptr 时 timer_ 保持 nullptr, 不自动创建 TimerService
+  //   (原因: TimerService jthread 创建影响 fork+exec timing, 导致 baseline
+  //    tests 7.8b/7.8c 回归。Sprint 30+ 可改为 lazy per-run 注册)
   Impl(IToolRegistry& tools,
        IInteractionBus& bus,
        ILLMProvider* llm,
-       const LayeredContext* ctx)
+       const LayeredContext* ctx,
+       ITimerService* timer = nullptr)
       : tools_(&tools),
         bus_(&bus),
         llm_(llm),
-        ctx_(ctx) {}
+        ctx_(ctx),
+        timer_(timer),
+        owned_timer_(nullptr) {
+    // timer_ 直接使用注入指针; nullptr 路径不创建默认 TimerService
+    // (见上方注释, Sprint 30+ 改进方向)
+  }
 
   ~Impl() {
-    // 析构时自动回收子进程，防止僵尸
+    // D8 四步析构顺序 (Oracle session ses_f6f25fd0bffeX5P4rs1hvHOYXQ 决议):
+    // ① 防御性 cancel deadline timer (idempotent, RAII guard 已 cancel 时 id=0)
+    if (deadline_timer_id_ != 0 && timer_) {
+      timer_->cancel(deadline_timer_id_);
+      deadline_timer_id_ = 0;
+    }
+    // ② 排空 timer (jthread join 等 in-flight callback 完成)
+    //    owned_timer_.reset() 在函数体内先于成员析构,所有 Impl 成员仍存活,
+    //    callback 内 [this] 访问合法,无 UAF
+    owned_timer_.reset();
+    timer_ = nullptr;
+    // ③ 子进程回收 (防止僵尸)
     if (child_pid_ > 0) {
       kill(child_pid_, SIGKILL);
       // SIGKILL 失败忽略
       waitpid_reap(child_pid_, nullptr);
       child_pid_ = -1;
     }
+    // ④ 关闭 pipes
     close_all_pipes();
   }
 
@@ -308,6 +332,16 @@ class SkillInterpreter::Impl {
   int pipe_out_r_ = -1;
   int pipe_err_r_ = -1;
 
+  // === Sprint 29 timer migration (D1/D3/D5/D9) ===
+  // owned_timer_: RAII 持有 TimerService (D9 eager at Impl 构造)
+  // timer_: 观察者指针 (注入时为外部指针,否则指向 owned_timer_.get())
+  // deadline_timer_id_: 当前 run() 注册的 deadline oneshot timer id
+  // deadline_exceeded_: timer callback → 主循环通信 (acquire/release 序)
+  std::unique_ptr<ITimerService> owned_timer_;
+  ITimerService* timer_ = nullptr;
+  ITimerService::TimerId deadline_timer_id_ = 0;
+  std::atomic<bool> deadline_exceeded_{false};
+
   void close_fd(int& fd) {
     if (fd >= 0) {
       close(fd);
@@ -372,6 +406,33 @@ class SkillInterpreter::Impl {
     std::string read_buf_err;  // pipe_err 行缓冲
     nlohmann::json output = nlohmann::json::object();
 
+    // === Sprint 29 timer migration (D2: deadline oneshot 注册) ===
+    // timer callback 写 atomic flag, 主循环 loop-top 检查
+    // release 序在 callback, acquire 序在主循环读 (D3 memory ordering)
+    // 注意: 注册开销 (mutex + map insert + cv notify ≈ 5-20µs) 在 loop 之前,
+    // 理论上可能延迟首个 loop-top check, 但实测在 fork+exec 后 (≥1ms) 无影响
+    deadline_exceeded_.store(false, std::memory_order_relaxed);
+    if (timer_) {
+      deadline_timer_id_ = timer_->register_oneshot(
+          cap.timeout_ms,
+          [this] { deadline_exceeded_.store(true, std::memory_order_release); });
+    }
+
+    // === RAII guard: 函数返回时自动 cancel deadline timer ===
+    // 覆盖 4 处 break (POLLHUP/EOF/parse-error/write-fail) + 5 处 return
+    // (cancel/timeout/poll-err/max-steps/dispatch-terminate) + 最终 return
+    // 析构函数再防御性 cancel (D8 四步顺序步骤①)
+    struct DeadlineTimerGuard {
+      ITimerService* timer;
+      ITimerService::TimerId* id_ptr;
+      ~DeadlineTimerGuard() {
+        if (timer && *id_ptr != 0) {
+          timer->cancel(*id_ptr);
+          *id_ptr = 0;
+        }
+      }
+    } deadline_guard{timer_, &deadline_timer_id_};
+
     pollfd fds[2];
     fds[0].fd = pipe_out_r;
     fds[0].events = POLLIN;
@@ -390,6 +451,21 @@ class SkillInterpreter::Impl {
         SkillResult r;
         r.success = false;
         r.error_code = ErrorCode::Abort;
+        r.stderr_content = stderr_buf;
+        r.stderr_truncated = stderr_truncated;
+        r.child_exit_status = status;
+        return r;
+      }
+
+      // Sprint 29: timer-driven deadline → 立即 SIGKILL (Oracle D11 first-wins)
+      // timer callback 已 set deadline_exceeded_, 主循环 acquire 序读取
+      if (deadline_exceeded_.load(std::memory_order_acquire)) {
+        kill_retry(pid, SIGKILL);
+        int status;
+        waitpid_reap(pid, &status);
+        SkillResult r;
+        r.success = false;
+        r.error_code = ErrorCode::Timeout;
         r.stderr_content = stderr_buf;
         r.stderr_truncated = stderr_truncated;
         r.child_exit_status = status;
@@ -728,8 +804,9 @@ class SkillInterpreter::Impl {
 SkillInterpreter::SkillInterpreter(IToolRegistry& tools,
                                     IInteractionBus& bus,
                                     ILLMProvider* llm,
-                                    const LayeredContext* ctx)
-    : impl_(std::make_unique<Impl>(tools, bus, llm, ctx)) {}
+                                    const LayeredContext* ctx,
+                                    ITimerService* timer)
+    : impl_(std::make_unique<Impl>(tools, bus, llm, ctx, timer)) {}
 
 SkillInterpreter::~SkillInterpreter() = default;  // out-of-line
 

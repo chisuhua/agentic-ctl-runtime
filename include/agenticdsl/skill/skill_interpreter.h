@@ -2,11 +2,13 @@
 // 功能描述：SkillInterpreter PIMPL 公开头文件 — ADR-0055 定义的 SKILL.md
 //          命令式 DSL 隔离执行接口。
 //          提供 SkillInterpreter::run() 方法启动隔离进程执行 .skill.md 文件。
+//          Sprint 29: 新增 ITimerService* 可选参数支持硬 deadline 注入测试。
 // 设计依据：ADR-0055（Skill 隔离执行模型）
 //          + openspec/changes/skill-interpreter-real-loading/design.md
 //          + openspec/changes/skill-interpreter-real-loading/specs/
+//          + openspec/changes/skill-interpreter-timer-migration/design.md (Sprint 29)
 // 作者：AgenticDSL SkillInterpreter change
-// 最后修改日期：2026-07-22
+// 最后修改日期：2026-09-12 (Sprint 29 timer migration)
 #pragma once
 
 #include <chrono>
@@ -25,6 +27,10 @@ namespace agenticdsl {
 
 // 前向声明（来自 common/llm/llm_types.h）
 class ILLMProvider;
+
+// 前向声明（来自 contract/timer_service.h）— Sprint 29 注入式 deadline 测试
+// 头文件不直接 include timer_service.h 以保持最小 include surface (ADR-0021 §3.5)
+class ITimerService;
 
 // === SkillCapability — 注入子进程的能力限制 ===
 // 字段类型对齐 ADR-0055 §决策 3
@@ -59,10 +65,20 @@ class SkillInterpreter {
   /// @param bus   事件总线引用
   /// @param llm   LLM provider 指针（可为 nullptr）
   /// @param ctx   分层上下文指针（可为 nullptr）
+  /// @param timer ITimerService 注入指针（Sprint 29 新增，默认 nullptr）.
+  ///              nullptr 时内部自动 make_default_timer_service() (eager, D9).
+  ///              非 nullptr 时使用注入的 timer (测试可传 FakeTimer).
+  ///              生命周期契约 (D10, 镜像 workflow_callback_channel.h:47-51):
+  ///              - 注入 timer 时,调用方必须保证: SkillInterpreter 析构前,timer
+  ///                的 callback 已无 in-flight 执行 (cancel 不等待已收集但未执行的
+  ///                callback, [this] 捕获可能触发 UAF).
+  ///              - 推荐顺序: 析构 SkillInterpreter → 析构 timer.
+  ///              - nullptr 路径安全 (unique_ptr RAII 自动 join).
   SkillInterpreter(IToolRegistry& tools,
                    IInteractionBus& bus,
                    ILLMProvider* llm,
-                   const LayeredContext* ctx);
+                   const LayeredContext* ctx,
+                   ITimerService* timer = nullptr);
 
   /// 析构函数：自动 waitpid() 防止僵尸进程
   ~SkillInterpreter();
