@@ -113,6 +113,11 @@ add_library(agenticdsl_common STATIC
     src/common/utils/timer_service.cpp  # Sprint 28 kernel-timer-service: ITimerService 默认实现 (cv + jthread)
     src/core/types/tool_result.cpp
 )
+# Sprint 28 microkernel migration: agenticdsl_common now linked into
+# PDK .so (temporal_agent etc.) - require PIC for shared object linkage
+set_target_properties(agenticdsl_common PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
 target_link_libraries(agenticdsl_common PUBLIC
     agenticdsl_includes
     agenticdsl_policy

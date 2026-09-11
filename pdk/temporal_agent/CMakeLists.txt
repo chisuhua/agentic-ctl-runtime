@@ -32,6 +32,7 @@ target_compile_features(pdk_temporal_agent PRIVATE cxx_std_20)
 # 链接 PDK INTERFACE 头文件库 (ITemporalClient / tool_macros / plugin_info)
 target_link_libraries(pdk_temporal_agent PRIVATE
     hydraforge_pdk
+    agenticdsl_common  # Sprint 28 microkernel: TimerService (cv + jthread 实现)
 )
 
 set_target_properties(pdk_temporal_agent PROPERTIES
