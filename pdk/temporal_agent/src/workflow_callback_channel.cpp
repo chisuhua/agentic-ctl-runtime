@@ -6,7 +6,7 @@
 // 线程安全：handlers_ 受 handlers_mu_ 保护; running_ 为 atomic
 //          handler 调用异常 try/catch 隔离
 // 作者：pkgm-temporal-agent Phase 2 → Sprint 28 microkernel migration
-// 最后修改日期：2026-09-XX
+// 最后修改日期：2026-09-12
 
 #include "workflow_callback_channel.h"
 

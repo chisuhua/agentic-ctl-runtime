@@ -1,11 +1,10 @@
 // src/common/utils/timer_service.cpp
-// 文件头注释
 // 功能描述: TimerService 默认实现 (cv + steady_clock + std::jthread)
 //          满足 ITimerService 契约 (include/agenticdsl/contract/timer_service.h)
 // 设计依据: openspec/changes/2026-09-10-kernel-timer-service/design.md §D2/D4
 //          + ADR-0021 (PDK Design) §3.5 — contract 层工具,PDK 可注入
 // 作者: HydraForge Solo Dev
-// 最后修改日期: 2026-09-XX
+// 最后修改日期: 2026-09-12
 #include "agenticdsl/contract/timer_service.h"
 
 #include <atomic>

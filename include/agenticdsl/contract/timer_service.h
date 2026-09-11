@@ -1,5 +1,4 @@
 // include/agenticdsl/contract/timer_service.h
-// 文件头注释
 // 功能描述: ITimerService 通用定时器抽象契约 (Sprint 28 microkernel 蓝图组件)
 //          解决项目 3 处分散的定时器实现:
 //            1. WorkflowCallbackChannel::poll_loop — 200ms busy-poll
@@ -12,7 +11,7 @@
 //          + ADR-0068 (EventBuilder 先例)
 //          + Oracle session ses_f741f5d05ffeItVmfYVEjr67m3 评审通过
 // 作者: HydraForge Solo Dev
-// 最后修改日期: 2026-09-XX
+// 最后修改日期: 2026-09-12
 #pragma once
 
 #include <chrono>
@@ -77,10 +76,14 @@ class ITimerService {
   /**
    * @brief 取消 timer
    * @param id register_* 返回的 TimerId
-   * @return true = 成功取消未触发的 timer
-   *         false = id 未知 / timer 已触发 / id == 0
+   * @return true = 成功从 map 中移除 timer (返回前仍在锁内, 但**不等待已收集但尚未执行的 callback**)
+   *         false = id 未知 / timer 已触发 (oneshot 已 fire) / id == 0
    *
-   * 线程安全: cancel 与 callback 执行互斥 (通过 mutex 串行化), 但 cancel 不等待 callback 完成
+   * 线程语义 (重要, 与 Oracle session `ses_f6f8ab1dbffeBh5kdvNi1SEE3k` SHIP-with-fixes 修正一致):
+   * - cancel 与 callback **不互斥**: worker 在收集 fire 后 `lock.unlock()` 再执行 callback, 因此
+   *   cancel(periodic_id) 返回 true 时, 上一次收集的 fire 可能仍在执行 (captures `[this]`).
+   * - 销毁 TimerService / 持有方必须在 `~TimerService()` 后确保无 in-flight callback, 或主动等待
+   *   worker join. 默认 owned TimerService (std::jthread RAII) 安全, **外部注入 timer 必须自行保证生命周期**.
    */
   virtual bool cancel(TimerId id) = 0;
 };

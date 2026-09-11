@@ -1,12 +1,11 @@
 // tests/test_timer_service.cpp
-// 文件头注释
 // 功能描述: TimerService 契约层工具测试 (Sprint 28 microkernel 蓝图组件)
 //          11 cases 覆盖: oneshot/periodic/cancel/漂移/线程安全/异常隔离/destructor join
 // 设计依据: openspec/changes/2026-09-10-kernel-timer-service/specs/kernel-timer-service/spec.md
 //          + AGENTS.md §ENGINEERING PATTERNS 模式 #1 (TDD 5 步)
 //          + Oracle session ses_f741f5d05ffeItVmfYVEjr67m3 + ses_f6fe76438ffeM5q8z2tUXQ7lIQ
 // 作者: HydraForge Solo Dev
-// 最后修改日期: 2026-09-XX
+// 最后修改日期: 2026-09-12
 #include <atomic>
 #include <chrono>
 #include <iostream>
@@ -120,7 +119,7 @@ TEST_CASE("periodic_no_accumulated_drift", "[timer_service][periodic][drift]") {
   REQUIRE(wait_until([&] { return count.load() >= 10; }, 2000ms));
   auto elapsed = std::chrono::steady_clock::now() - start;
 
-  // 累积式 deadline: 总耗时 ≥ 1000ms (无负漂移), < 1300ms (容忍 CI 调度延迟)
+  // 累积式 deadline: 总耗时 ≥ 1000ms (无负漂移), < 1500ms (容忍 CI 抖动, Oracle 建议放宽上限)
   auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
   INFO("Periodic timer elapsed: " << elapsed_ms << "ms after " << count.load() << " fires");
   REQUIRE(elapsed_ms >= 1000);

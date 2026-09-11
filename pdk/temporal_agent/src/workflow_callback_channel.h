@@ -7,7 +7,7 @@
 //          + openspec/changes/2026-09-10-kernel-timer-service/design.md §D6
 // 线程安全：handlers_ 受 mutex 保护; stop() 确保 timer cancel
 // 作者：pkgm-temporal-agent Phase 2 → Sprint 28 microkernel migration
-// 最后修改日期：2026-09-XX
+// 最后修改日期：2026-09-12
 
 #pragma once
 
@@ -43,6 +43,12 @@ class WorkflowCallbackChannel {
   // 启动后台 long-poll (通过 ITimerService 注册 periodic callback)
   // @param timer nullptr 时内部创建 TimerService (默认 std::jthread 实现)
   //              非 nullptr 时使用注入的 timer (测试可注入 mock)
+  //
+  // 生命周期契约 (per Oracle session `ses_f6f8ab1dbffeBh5kdvNi1SEE3k` SHIP-with-fixes):
+  // - 注入 timer 时, 调用方必须保证: channel 析构前, timer 的 callback 已无 in-flight 执行
+  //   (cancel 不等待已收集但未执行的 callback, [this] 捕获可能触发 UAF).
+  // - 推荐: 调用方先 stop() (cancel periodic timer), 再析构 timer.
+  // - 默认 nullptr 路径安全 (unique_ptr<ITimerService> owned_timer_ RAII 自动 join).
   void start_polling(std::shared_ptr<ITemporalBackend> backend,
                      agenticdsl::ITimerService* timer = nullptr);
 
