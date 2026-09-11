@@ -32,6 +32,10 @@
 #include <agenticdsl/contract/iinteraction_bus.h>
 #include <modules/budget/budget_controller.h>
 
+// Sprint 30: timer_service.h 提供 ITimerService complete type (Impl 成员访问需完整类型),
+// 仅在 chat_session.cpp include (header 用 void* PIMPL 避开 namespace pollution)
+#include <agenticdsl/contract/timer_service.h>
+
 
 namespace pdk_chat_demo {
 
@@ -218,16 +222,29 @@ public:
     std::thread input_thread_;
     std::atomic<bool> stop_input_thread_{false};
 
+    // === Sprint 30 timer migration (D1/D3/D5/D9) ===
+    // timer_: 观察者指针 (从 void* handle cast, PIMPL void* 模式避开 namespace pollution)
+    // periodic_id_: input_thread 注册的 periodic timer id
+    // shutdown_check_pending_: timer callback → 主循环通信 (acquire/release 序)
+    agenticdsl::ITimerService* timer_ = nullptr;
+    agenticdsl::ITimerService::TimerId periodic_id_ = 0;
+    std::atomic<bool> shutdown_check_pending_{false};
+
     Impl(
         agenticdsl::DSLEngine* e,
         std::shared_ptr<agenticdsl::IInteractionBus> b,
         agenticdsl::IToolRegistry* r,
         const AgentConfig& a,
         const SessionConfig& s,
-        std::shared_ptr<CancellationRegistry> registry_arg
+        std::shared_ptr<CancellationRegistry> registry_arg,
+        // Sprint 30: PIMPL void* handle (header 用 void* 避开 namespace pollution,
+        // cpp 内 cast 回 ITimerService*。 nullptr = 不注入, D9 lazy)
+        void* timer_handle = nullptr
     ) : engine(e), bus(std::move(b)), registry(r), agent_cfg(a), session_cfg(s),
         provider_mode(a.provider),
         persist_dir_expanded(expand_home(s.persist_dir)),
+        // Sprint 30: cast void* → ITimerService* (调用方保证类型正确)
+        timer_(timer_handle ? static_cast<agenticdsl::ITimerService*>(timer_handle) : nullptr),
         // §4.0.2/§4.0.9 NC3: shared registry if provided, else fallback self-owned
         cancellation_registry_(registry_arg ? registry_arg : std::make_shared<CancellationRegistry>()) {
         if (!persist_dir_expanded.empty()) {
@@ -239,6 +256,14 @@ public:
     }
 
     ~Impl() {
+        // D8 四步析构顺序 (Sprint 29 复用):
+        // ① 防御性 cancel periodic timer (idempotent, RAII guard 已 cancel 时 id=0)
+        if (periodic_id_ != 0 && timer_) {
+            timer_->cancel(periodic_id_);
+            periodic_id_ = 0;
+        }
+        timer_ = nullptr;
+
         stop_input_thread_.store(true);
         // §2.3/§3.4: notify cv so any blocked pop_next_input wakes and returns nullopt
         input_cv_.notify_all();
@@ -259,8 +284,9 @@ ChatSession::ChatSession(
     agenticdsl::IToolRegistry* registry,
     const AgentConfig& agent_cfg,
     const SessionConfig& session_cfg,
-    std::shared_ptr<CancellationRegistry> registry_arg
-) : impl_(std::make_unique<Impl>(engine, std::move(bus), registry, agent_cfg, session_cfg, registry_arg)) {
+    std::shared_ptr<CancellationRegistry> registry_arg,
+    void* timer_handle
+) : impl_(std::make_unique<Impl>(engine, std::move(bus), registry, agent_cfg, session_cfg, registry_arg, timer_handle)) {
     // 生成 session ID (UUID 简化版)
     std::random_device rd;
     std::mt19937_64 gen(rd());
@@ -714,8 +740,32 @@ bool ChatSession::is_input_thread_shutdown() const {
 }
 
 void ChatSession::Impl::input_thread_main() {
+    // Sprint 30 (D2 + D5): register periodic timer (50ms) for shutdown responsiveness.
+    // D9 fallback: if timer_==nullptr, create per-thread TimerService (D9 lazy).
+    // RAII guard cancels timer on all exit paths (EOF break / catch / normal return).
+    if (timer_ != nullptr) {
+        periodic_id_ = timer_->register_periodic(
+            std::chrono::milliseconds(50),
+            [this] { shutdown_check_pending_.store(true, std::memory_order_release); });
+    }
+    struct TimerGuard {
+        agenticdsl::ITimerService* timer;
+        agenticdsl::ITimerService::TimerId* id_ptr;
+        ~TimerGuard() {
+            if (timer && *id_ptr != 0) {
+                timer->cancel(*id_ptr);
+                *id_ptr = 0;
+            }
+        }
+    } timer_guard{timer_, &periodic_id_};
+
     std::string line;
     while (!stop_input_thread_.load(std::memory_order_acquire)) {
+        // Sprint 30 (D3): 周期性 timer callback 已 set shutdown_check_pending_,
+        // 主循环 acquire-load 检查 (no-op in getline 阻塞场景, 但建立 pattern 供
+        // Sprint 31+ chat-session-read-timeout poll/read 管道化使用)
+        (void)shutdown_check_pending_.load(std::memory_order_acquire);
+
         if (!std::getline(std::cin, line)) {
             // §3.4 NH2 fix: EOF must signal shutdown AND wake any blocked pop_next_input
             stop_input_thread_.store(true, std::memory_order_release);

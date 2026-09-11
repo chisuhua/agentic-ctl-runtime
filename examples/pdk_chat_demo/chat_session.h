@@ -124,7 +124,17 @@ public:
         agenticdsl::IToolRegistry* registry,
         const AgentConfig& agent_cfg,
         const SessionConfig& session_cfg,
-        std::shared_ptr<CancellationRegistry> registry_arg = nullptr  // §4.0.2/§4.0.9 shared registry (NC3 default)
+        std::shared_ptr<CancellationRegistry> registry_arg = nullptr,  // §4.0.2/§4.0.9 shared registry (NC3 default)
+        // Sprint 30 (chat-session-timer-migration) PIMPL void* handle:
+        // 避开 chat_session.h 在 namespace pdk_chat_demo 内的 agenticdsl namespace pollution
+        // (forward decl block 被 commands/*.cpp include 时嵌套为 pdk_chat_demo::agenticdsl,
+        // 导致 agenticdsl::DSLEngine 等不可见)。 用 void* opaque handle:
+        // 调用方传 static_cast<void*>(&timer), Impl 在 cpp 内 cast 回 ITimerService*。
+        // - nullptr 默认 D9 lazy (Impl 不创建 jthread, input_thread 入口 fallback)
+        // - 生命周期: 调用方保证 ChatSession 析构前 timer 无 in-flight callback (D10)
+        // - Sprint 31+ Mode 修正: 移除 chat_session.h forward decl block + 各 commands/*.cpp
+        //   改 include 完整 header, 可恢复 agenticdsl::ITimerService* 直接类型
+        void* timer_handle = nullptr
     );
 
     ~ChatSession();
