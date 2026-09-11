@@ -7,7 +7,7 @@
 
 ## 2. 接口契约 (D1: contract 层定义)
 
-- [ ] 2.1 创建 `include/agenticdsl/common/timer_service.h` (~80 LOC)
+- [ ] 2.1 创建 `include/agenticdsl/contract/timer_service.h` (~80 LOC)
   - `class ITimerService` 抽象接口
   - `using TimerId = uint64_t`
   - 3 个纯虚函数:`register_oneshot` / `register_periodic` / `cancel`

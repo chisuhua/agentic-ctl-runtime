@@ -110,6 +110,7 @@ add_library(agenticdsl_common STATIC
     src/common/utils/parser_utils.cpp
     src/common/utils/template_renderer.cpp
     src/common/utils/yaml_json.cpp
+    src/common/utils/timer_service.cpp  # Sprint 28 kernel-timer-service: ITimerService 默认实现 (cv + jthread)
     src/core/types/tool_result.cpp
 )
 target_link_libraries(agenticdsl_common PUBLIC

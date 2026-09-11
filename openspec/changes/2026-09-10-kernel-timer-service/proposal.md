@@ -18,7 +18,7 @@
 
 ## What Changes
 
-- **新增** `include/agenticdsl/common/timer_service.h` — `ITimerService` 抽象契约(contract 层,PDK 可注入)
+- **新增** `include/agenticdsl/contract/timer_service.h` — `ITimerService` 抽象契约(contract 层,PDK 可注入)
 - **新增** `src/common/timer_service.cpp` — `TimerService` 实现(`std::jthread` + `std::condition_variable::wait_until` + 单调时钟)
 - **新增** `tests/test_timer_service.cpp` — 单元测试(oneshot/periodic/cancel/漂移/线程安全)
 - **改造** `pdk/temporal_agent/src/workflow_callback_channel.cpp` — `WorkflowCallbackChannel` 注入 `ITimerService*`(默认 std::jthread 实现),消除 `poll_thread_` busy-poll
@@ -39,7 +39,7 @@
 
 - **依赖**: 无新外部依赖(`std::jthread` + `std::condition_variable` + `std::chrono::steady_clock` 均为 C++20 标准)
 - **受影响代码 (3 文件)**:
-  - `include/agenticdsl/common/timer_service.h` (新增, ~80 LOC)
+  - `include/agenticdsl/contract/timer_service.h` (新增, ~80 LOC)
   - `src/common/timer_service.cpp` (新增, ~150 LOC)
   - `pdk/temporal_agent/src/workflow_callback_channel.cpp` (改造, ~30 LOC 修改)
   - `pdk/temporal_agent/CMakeLists.txt` (新增 `agenticdsl_common` 依赖)

@@ -6,7 +6,7 @@
 
 ### Requirement: ITimerService 抽象契约 SHALL 提供
 
-`ITimerService` SHALL 是一个 contract 层抽象接口（位于 `include/agenticdsl/common/timer_service.h`），提供以下 API:
+`ITimerService` SHALL 是一个 contract 层抽象接口（位于 `include/agenticdsl/contract/timer_service.h`），提供以下 API:
 
 - `using TimerId = uint64_t` — 单调递增 timer 标识符
 - `virtual TimerId register_oneshot(std::chrono::milliseconds delay, std::function<void()> cb) = 0` — 注册一次性 timer,`delay` 后触发一次回调;返回 `TimerId` 用于后续 `cancel`
