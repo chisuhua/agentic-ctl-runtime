@@ -204,7 +204,12 @@ void CognitiveWorker::worker_loop() {
                                      engine_->get_llm_provider());
 
     ToolResult result;
-    orch.process(task_id, [&result](ToolResult r) { result = std::move(r); });
+    // ⚠️ NOT redundant: 必须传 prompt 而非 task_id. SimpleCognitiveOrchestrator
+    // 的 process(session_id) 内部把 session_id 当 user_prompt 拼到 LLM prompt
+    // 末尾 ("[user] <session_id>"). 误传 task_id → LLM 收到 "[user] task-id",
+    // 自由发挥字段名 (e.g. {"input": "task-id"}), 工具 args.at("message") 抛
+    // unordered_map::at → 真实 LLM 测试 fail. (历史 bug 修复守卫)
+    orch.process(prompt, [&result](ToolResult r) { result = std::move(r); });
 
     // 4) TD-CW-03 Bridge: meta["error_code"] string -> ErrorCode enum
     //    失败时 SimpleCognitiveOrchestrator 仅写入 meta["error_code"] 字符串;

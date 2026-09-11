@@ -153,6 +153,58 @@ TEST_CASE("CognitiveWorker submit task and receive completed event",
   REQUIRE(completed_payload.trace_id.value() == "task-1");
 }
 
+// 回归守卫: CognitiveWorker 必须把 submit_task 的 prompt (非 task_id) 透传给 LLM.
+// 历史 bug: 早期实现误传 task_id → LLM 看到 "[user] task-id", 自由发挥字段名
+// (e.g. {"input": "task-id"}), echo 工具 args.at("message") 抛 unordered_map::at
+// → 真实 LLM 测试 fail. 此 mock 测试用 call_history() 验证 LLM 收到的 prompt
+// 包含 submit_task 的 prompt 内容, CI skip 下仍能拦截回归.
+TEST_CASE("CognitiveWorker forwards prompt to LLM (not task_id)",
+          "[cognitive_worker][regression][prompt-forwarding]") {
+  auto bus = std::make_shared<InMemoryBus>();
+  auto engine = make_engine_with_mock(R"({"tool":"echo","args":{"message":"x"}})");
+  engine->register_tool(
+      "echo",
+      agenticdsl::ToolMetadata{"echo", "test", "test",
+                               agenticdsl::ToolCategory::ReadOnly,
+                               agenticdsl::LayerProfile::Workflow},
+      [](const std::unordered_map<std::string, std::string>& args)
+          -> nlohmann::json {
+        return nlohmann::json{{"echoed", args.at("message")}};
+      });
+
+  // 解开装饰链拿 raw MockLLMProvider, 验证 call_history
+  MockLLMProvider* mock = nullptr;
+  {
+    ILLMProvider* p = engine->get_llm_provider();
+    auto* d = dynamic_cast<ILLMProviderDecorator*>(p);
+    mock = dynamic_cast<MockLLMProvider*>(d ? d->inner() : p);
+  }
+  REQUIRE(mock != nullptr);
+
+  std::atomic<int> completed_count{0};
+  bus->subscribe("cognitive.task.completed",
+                 [&](const BusEvent&) { ++completed_count; });
+
+  const std::string kTaskId = "task-id-XYZ";
+  const std::string kPrompt = "this is the user prompt YYY";
+
+  CognitiveWorker worker(std::move(engine), bus);
+  worker.start();
+  worker.submit_task(kTaskId, kPrompt);
+
+  wait_until([&] { return completed_count.load() == 1; });
+  worker.stop();
+
+  REQUIRE(mock->call_count() == 1);
+  const auto& history = mock->call_history();
+  REQUIRE(history.size() == 1);
+
+  const std::string& llm_prompt = history[0].prompt;
+  INFO("LLM received prompt: " << llm_prompt);
+  REQUIRE(llm_prompt.find(kPrompt) != std::string::npos);
+  REQUIRE(llm_prompt.find(kTaskId) == std::string::npos);
+}
+
 // =====================================================================
 // Test 3: 优雅停止 (worker 阻塞中 -> stop -> join)
 // =====================================================================
