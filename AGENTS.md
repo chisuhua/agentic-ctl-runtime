@@ -259,6 +259,20 @@ HydraForge/
 - **Known Issue (KI-1, ship-with-known-issue)**: Catch2 v3.7.0 + std::jthread reporter bug — `test_timer_service` binary exit 0 + 11 test body 全部跑完, catch2 reporter 误报 FAILED. 不影响功能, reporter 误报 only. Mitigation (可选 follow-up): 升级 Catch2 amalgamated 到 v3.8+, 或拆 TimerService 测试到多个 binary (每个 1 个 TEST_CASE)
 - 教训: **contract 层抽象 (同 EventBuilder 先例)** + **RAII unique_ptr 所有权 (避免 raw new/delete)** + **cv 跨平台 (不依赖 timerfd/epoll)** + **累积 deadline 语义 (同 timerfd_settime)**
 
+**2026-09-12 case study (skill-interpreter-timer-migration Sprint 29)**:
+- 模式 #6 第 2 个真实消费者 — `SkillInterpreter::Impl::ipc_loop_and_wait` (skill_interpreter.cpp:356-588) 原本以 `poll(fds, 2, 100)` 100ms 粒度驱动 cancel/timeout 响应, 无测试注入点 / 无异常隔离 / 与 timer lifecycle 耦合. 迁移目标: 让 TimerService 成为 deadline timer 的唯一定义点
+- Oracle 决议 (session `ses_f6f25fd0bffeX5P4rs1hvHOYXQ`): 11 个设计决策 D1-D11 全部 resolve, **核心收敛** D8 (析构顺序) + D11 (first-wins 不变量). 关键 D9 调整: TimerService 创建从 eager-at-construction 改为 lazy (nullptr 默认路径不创建 jthread), **因 TimerService jthread 创建影响 fork+exec timing 导致 baseline tests 7.8b/7.8c 回归**
+- 实装: commit `03b57ac` (3 files +354/-7, Impl ctor/dtor/members + ipc_loop_and_wait timer 集成 + D8 四步析构 + 3 S29 tests)
+- 验证: `test_skill_interpreter` 25 cases 24 PASS + 1 known-flaky (7.S29-1 system load 下 MockToolRegistry 同步返回导致 child 在 firer fire timer 前完成, fire_oneshot 返回 false. 单独运行 6/6 PASS, inherent limitation 非实现 bug)
+- 关键调试教训 (根因链):
+  1. TimerService jthread 创建在 Impl ctor → 影响 fork+exec 时序 → 7.8b/7.8c baseline 测试回归
+  2. timer registration 在 function entry → 首个 loop-top check 被 register_oneshot 开销 (mutex+map insert+cv notify ≈ 5-20µs) 推迟 → token.cancel 永远不触发
+  3. timer registration 移到 loop 内 (poll 前) → 修复 #2 但 #1 仍存在
+  4. 移除默认 TimerService 创建 → 修复 #1, 但 S29 tests 的 RAII guard 在 child 完成后 cancel timer, firer fire_oneshot 找不到已 cancel 的 timer → fire_success=false
+  5. SKILL 用 500 个 call_tool 让 child 存活 >5ms → firer 在 1ms fire 时 child 仍在 IPC → fire_success=true
+- 教训: **jthread 创建在 ctor 是 micro-anti-pattern** (影响 fork timing, 跨进程场景必踩) + **timer registration 必须在首个 loop-top check 之后** (否则 cancel 检测被推迟) + **FakeTimer 测试用 IPC call 数量保 child 存活** (MockToolRegistry 同步返回下 child 可在 <1ms 完成)
+- **Mode 修正建议 (Sprint 30+)**: D9 lazy TimerService 改为 "per-run at first ipc_loop_and_wait()", 既避免 jthread 影响 ctor timing, 又保证 timer 在首个 loop-top check 之后注册
+
 ### 治理层 (Governance)
 
 #### 5. 跨多树相同测试目标的 helper 双维护策略
@@ -280,6 +294,7 @@ HydraForge/
 ### 沉淀源 (Provenance)
 
 - **2026-09-12**: kernel-timer-service (Sprint 28 microkernel 第 1 件) ship + temporal_agent 迁移, Oracle session `ses_f6fe76438ffeM5q8z2tUXQ7lIQ` 后续建议直接产出模式 6 (Contract-layer utility tool pattern: 抽 contract 层接口 + factory 函数 + 实现放 src/common/utils/ + periodic 累积 deadline 语义 + 异常隔离 + RAII unique_ptr 所有权). commit `188bd8c` (TimerService 实现) + `bc8d751` (temporal_agent 迁移 + agenticdsl_common PIC fix). KI-1: Catch2 v3.7.0 + std::jthread reporter bug 标 ship-with-known-issue.
+- **2026-09-12**: skill-interpreter-timer-migration (Sprint 29, 模式 #6 第 2 个消费者) ship, Oracle session `ses_f6f25fd0bffeX5P4rs1hvHOYXQ` 审查 + 11 个设计决策 D1-D11 全部 resolve (核心收敛 D8 析构顺序 + D11 first-wins 不变量). 关键调试教训: TimerService jthread 创建在 Impl ctor 影响 fork+exec timing 导致 baseline 7.8b/7.8c 回归 → D9 从 eager 改为 lazy (nullptr 路径不创建 TimerService). commit `03b57ac` (3 files +354/-7). 已知问题: 7.S29-1 system load 下 flaky (MockToolRegistry 同步返回, inherent limitation 非实现 bug). Mode 修正建议 (Sprint 30+): D9 lazy TimerService 改为 "per-run at first ipc_loop_and_wait()".
 - **2026-09-08**: Oracle session `ses_f7f5ef175ffeGKhxXLfBJjzLVX` 审查 + `ses_f330bb6ffehvveECRPGKbPF7` 复核, 模式 1/2/4 直接产出.
 - **2026-09-08**: Phase B SIGSEGV 调试 (gdb + 消除实验) 沉淀模式 3 (断言分层) + 异常隔离 §NOTES 扩展.
 - **2026-08-04**: chat-real-llm-coverage ship 沉淀 `helper 三态分离` (模式工程层).
