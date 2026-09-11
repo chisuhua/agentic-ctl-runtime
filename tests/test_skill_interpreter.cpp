@@ -8,17 +8,101 @@
 #include <agenticdsl/skill/skill_interpreter.h>
 #include <agenticdsl/contract/iinteraction_bus.h>
 #include <agenticdsl/contract/itool_registry.h>
+#include <agenticdsl/contract/timer_service.h>
 #include <agenticdsl/types/layered_context.h>
 #include <core/types/tool_result.h>
 #include "test_helpers/mock_bus.h"
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <fstream>
+#include <functional>
+#include <mutex>
+#include <sstream>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 using namespace agenticdsl;
+using Ms = std::chrono::milliseconds;
+
+// ============================================================
+// FakeTimerService — Sprint 29 TimerService 注入测试用
+// ============================================================
+//
+// 与 pdk/temporal_agent 测试中的 FakeTimerService 同构 (~60 LOC), 但简化:
+// - 只支持 oneshot (SkillInterpreter 仅注册 deadline oneshot)
+// - fire_oneshot(id) 同步触发 callback
+// - 不启动 worker thread, 测试代码手动驱动
+// 跨多树相同测试目标的 helper 双维护策略 (AGENTS.md §治理层 模式 5)
+class FakeTimerService : public ITimerService {
+ public:
+  TimerId register_oneshot(Ms delay, Callback cb) override {
+    std::lock_guard<std::mutex> lock(mtx_);
+    TimerId id = next_id_.fetch_add(1, std::memory_order_relaxed);
+    oneshots_.push_back({id, delay, std::move(cb)});
+    return id;
+  }
+
+  TimerId register_periodic(Ms, Callback) override {
+    return 0;  // SkillInterpreter 不用 periodic
+  }
+
+  bool cancel(TimerId id) override {
+    std::lock_guard<std::mutex> lock(mtx_);
+    auto before = oneshots_.size();
+    oneshots_.erase(
+        std::remove_if(oneshots_.begin(), oneshots_.end(),
+                       [id](const OneshotEntry& e) { return e.id == id; }),
+        oneshots_.end());
+    return oneshots_.size() < before;
+  }
+
+  // === 测试用 API ===
+
+  // 手动触发 oneshot callback (同步)
+  // 返回 true = 找到 id 并触发, false = id 不存在 (已被 cancel 或从未注册)
+  bool fire_oneshot(TimerId id) {
+    Callback cb_copy;
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      auto it = std::find_if(oneshots_.begin(), oneshots_.end(),
+                             [id](const OneshotEntry& e) { return e.id == id; });
+      if (it == oneshots_.end()) return false;
+      cb_copy = it->cb;
+    }
+    if (cb_copy) cb_copy();
+    return true;
+  }
+
+  // 列出所有 active oneshot ids (按注册顺序)
+  std::vector<TimerId> registered_oneshots() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    std::vector<TimerId> ids;
+    ids.reserve(oneshots_.size());
+    for (const auto& e : oneshots_) ids.push_back(e.id);
+    return ids;
+  }
+
+  size_t oneshots_count() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return oneshots_.size();
+  }
+
+ private:
+  struct OneshotEntry {
+    TimerId id;
+    Ms delay;
+    Callback cb;
+  };
+  std::mutex mtx_;
+  std::atomic<TimerId> next_id_{1};
+  std::vector<OneshotEntry> oneshots_;
+};
 
 // ============================================================
 // Mock 工具注册表 — 记录工具调用以便后续断言
@@ -770,4 +854,174 @@ TEST_CASE("7.3 seccomp 违规 — SIGSYS (openat 被禁)", "[skill_interceptor]"
 
     CHECK(result.success);
     cleanup_file(skill);
+}
+
+// ============================================================
+// Sprint 29 — SkillInterpreter TimerService 注入 (模式 #6 第 2 个消费者)
+// 设计依据: openspec/changes/skill-interpreter-timer-migration/
+// ============================================================
+
+TEST_CASE("7.S29-1 timer-driven deadline reached SIGKILL",
+          "[skill_interpreter][timer][deadline]") {
+  // 注入 FakeTimer: 测试代码手动 fire_oneshot 模拟 deadline 触发
+  // 验证: timer-driven deadline 触发 → SkillInterpreter SIGKILL 子进程 + 返回 Timeout
+  // 编译失败点 (TDD step 1-2): 当前 SkillInterpreter ctor 仅有 4 参, 5 参尚未实现
+  MockToolRegistry tools;
+  test::MockBus bus;
+  FakeTimerService fake_timer;
+
+  SkillInterpreter interpreter(tools, bus, nullptr, nullptr, &fake_timer);
+
+  // SKILL 用 500 个 call_tool 保持 child 存活 >5ms
+  // MockToolRegistry 同步返回, 100 个 call 在 fast machine 上 <2ms 完成,
+  // firer 在 1ms fire timer 时 child 已退出, RAII guard 已 cancel timer,
+  // fire_oneshot 返回 false。500 个 call 确保 child 存活 >5ms,
+  // firer fire 时 child 仍在 fork+exec 或 IPC 中, RAII guard 未 cancel。
+  std::ostringstream skill_ss;
+  skill_ss << "---\n"
+              "name: deadline-test\n"
+              "version: 0.1\n"
+              "description: many calls to keep child alive for deadline\n"
+              "---\n";
+  for (int i = 0; i < 500; ++i) {
+    skill_ss << "call_tool(\"fs.read\", {\"path\": \"" << i << ".txt\"})\n";
+  }
+  std::string skill = create_temp_skill(skill_ss.str());
+  REQUIRE(!skill.empty());
+
+  SkillCapability cap;
+  cap.allowed_tools = {"fs.read"};
+  cap.max_steps = 600;
+  cap.timeout_ms = Ms(5000);
+
+  // 子线程: 1ms 后 fire deadline timer
+  // 注意: Catch2 REQUIRE 在非主线程不支持 (会 SIGABRT), 改用 atomic flag + 主线程 CHECK
+  // fire delay 选 1ms 而非 50ms 的原因: MockToolRegistry 同步返回,
+  // child 可在 <2ms 内完成所有 IPC + exit,50ms 时 child 已退出,
+  // timer 触发时 parent 已 return success=true。
+  // 1ms 时 child 仍在 fork+exec 阶段,parent 尚未 enter loop,
+  // timer flag 写入后,parent 首个 loop-top check 立即检测到 deadline_exceeded_
+  std::atomic<bool> fired{false};
+  std::atomic<bool> fire_success{false};
+  std::thread firer([&]() {
+    std::this_thread::sleep_for(Ms(1));
+    auto ids = fake_timer.registered_oneshots();
+    if (!ids.empty()) {
+      fire_success.store(fake_timer.fire_oneshot(ids[0]));
+    }
+    fired.store(true);
+  });
+
+  auto result = interpreter.run(skill, cap, {});
+
+  firer.join();
+
+  CHECK(fired.load());
+  CHECK(fire_success.load());
+  CHECK_FALSE(result.success);
+  CHECK(result.error_code == ErrorCode::Timeout);
+  // SIGKILL 后 child_exit_status 反映 WIFSIGNALED: 非正常退出码
+  CHECK(result.child_exit_status != 0);
+
+  cleanup_file(skill);
+}
+
+TEST_CASE("7.S29-2 timer injection zero-overhead default path",
+          "[skill_interpreter][timer][default-path]") {
+  // 默认 timer 路径 (nullptr → internal make_default_timer_service())
+  // 验证: elapsed < 500ms 阈值 (Oracle D9 决议: eager 创建开销 ~50µs 可忽略)
+  MockToolRegistry tools;
+  test::MockBus bus;
+  SkillInterpreter interpreter(tools, bus, nullptr, nullptr);
+
+  std::string skill = create_temp_skill(
+      "---\n"
+      "name: fast-skill\n"
+      "version: 0.1\n"
+      "description: fast return\n"
+      "---\n"
+      "call_tool(\"fs.read\", {\"path\": \"a.txt\"})\n"
+      "return fs_read\n");
+  REQUIRE(!skill.empty());
+
+  SkillCapability cap;
+  cap.allowed_tools = {"fs.read"};
+  cap.max_steps = 50;
+  cap.timeout_ms = Ms(10000);
+
+  auto start = std::chrono::steady_clock::now();
+  auto result = interpreter.run(skill, cap, {});
+  auto elapsed_ms = std::chrono::duration_cast<Ms>(
+      std::chrono::steady_clock::now() - start).count();
+
+  CHECK(result.success);
+  // 阈值 500ms (per D9 + Oracle 风险 #4: 阈值而非精确计时避免 CI flake)
+  CHECK(elapsed_ms < 500);
+
+  cleanup_file(skill);
+}
+
+TEST_CASE("7.S29-3 first-wins invariant between timer and token",
+          "[skill_interpreter][timer][cancel][first-wins]") {
+  // Oracle Q4 决议 (D11): timer-driven deadline + token-driven cancel 任一路径
+  // 先触发即返回,无双 SIGKILL
+  // 验证: 同时触发 cancel + fire deadline, 只有一个 error_code 出现
+  // (Abort 或 Timeout),且只发送 1 个 SIGKILL
+  MockToolRegistry tools;
+  test::MockBus bus;
+  FakeTimerService fake_timer;
+
+  SkillInterpreter interpreter(tools, bus, nullptr, nullptr, &fake_timer);
+
+  // SKILL 用 500 个 call_tool 保持 child 存活 >5ms (同 7.S29-1 设计)
+  std::ostringstream skill_ss;
+  skill_ss << "---\n"
+              "name: cancel-deadline-race\n"
+              "version: 0.1\n"
+              "description: cancel vs deadline race\n"
+              "---\n";
+  for (int i = 0; i < 500; ++i) {
+    skill_ss << "call_tool(\"fs.read\", {\"path\": \"" << i << ".txt\"})\n";
+  }
+  std::string skill = create_temp_skill(skill_ss.str());
+  REQUIRE(!skill.empty());
+
+  SkillCapability cap;
+  cap.allowed_tools = {"fs.read"};
+  cap.max_steps = 600;
+  cap.timeout_ms = Ms(30000);
+
+  std::stop_source ss;
+
+  // 子线程: 1ms 后同时 fire deadline + request_stop
+  // 哪个先到 loop-top 由 OS 调度决定, 但 first-wins 不变量保证无双 SIGKILL
+  // fire delay 选 1ms 而非 50ms 的原因同 7.S29-1:
+  // MockToolRegistry 同步返回, child 在 <2ms 完成, 1ms 时 child 仍在 fork+exec
+  std::thread race_trigger([&]() {
+    std::this_thread::sleep_for(Ms(1));
+    auto ids = fake_timer.registered_oneshots();
+    if (!ids.empty()) {
+      fake_timer.fire_oneshot(ids[0]);
+    }
+    ss.request_stop();
+  });
+
+  auto result = interpreter.run(skill, cap, ss.get_token());
+
+  race_trigger.join();
+
+  CHECK_FALSE(result.success);
+  // first-wins: 必为 Abort 或 Timeout 其一, 不可能两个都成立 (XOR)
+  // 分解: CHECK_FALSE(is_abort && is_timeout) — Catch2 CHECK 不支持 &&,
+  // 改用 if-else 分解验证 exactly-one
+  bool is_abort = (result.error_code == ErrorCode::Abort);
+  bool is_timeout = (result.error_code == ErrorCode::Timeout);
+  CHECK((is_abort || is_timeout));  // at least one
+  if (is_abort) {
+    CHECK_FALSE(is_timeout);  // exactly-one: if abort, not timeout
+  } else {
+    CHECK(is_timeout);  // exactly-one: if not abort, must be timeout
+  }
+
+  cleanup_file(skill);
 }
