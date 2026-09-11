@@ -583,6 +583,52 @@
 
 ---
 
+## §Sprint 30 收官注记 (2026-09-12, chat-session-timer-migration PROPOSAL ONLY, implementation deferred)
+
+**战略定位**: Sprint 30 = 模式 #6 第 3 个消费者设计提案 (`ChatSession::Impl::input_thread_main` 的 `std::getline(std::cin, line)` 无超时死锁陷阱修复路径规划). **本次仅 ship OpenSpec design proposal, implementation deferred to Sprint 31+**.
+
+**OpenSpec artifacts ship** (gitignored, 仅磁盘):
+| Artifact | 路径 | 内容 |
+|----------|------|------|
+| proposal.md | `openspec/changes/chat-session-timer-migration/` | Why/What/Capabilities/Impact (Scope In: 7th ctor param + periodic timer + D8 四步析构 + D9 lazy fallback; Scope Out: 不替换 getline 为 poll/read 管道化) |
+| design.md | 同上 | D1-D7 Decisions (D1 timer 所有权 / D2 periodic 50ms / D3 atomic flag / D4 RAII guard / D5 per-thread fallback / D6 FakeTimerService 测试 / D7 destructor 顺序) |
+| spec.md | `openspec/specs/chat-session-timer-migration/spec.md` | 6 ADDED Requirements (optional ITimerService injection / periodic shutdown responsiveness / 100ms cancel responsiveness / RAII cleanup / FakeTimer testing / public API 不变) |
+| tasks.md | 同上 | TDD 5 步 + Sanitizer + Oracle SHIP-with-fixes + follow-ups |
+| archive | `openspec/changes/archive/2026-09-11-chat-session-timer-migration/` | 完整 archived change (6 Requirements 创建) |
+
+**Validation 结果** (proposal 阶段, implementation 未执行):
+- `openspec validate chat-session-timer-migration --strict` → ✅ valid
+- `tools/adr_lint.py` → ✅ 0 errors
+- `tools/docs_drift_audit.py` → ✅ 0 DRIFT
+
+**🚫 Implementation BLOCKED: namespace pollution**
+
+`chat_session.h` 原代码用 forward decl block (`namespace agenticdsl {...}` at GLOBAL scope) 暴露 `agenticdsl::DSLEngine*` 等类型. 当 `#include <agenticdsl/contract/timer_service.h>` 加入后, `agenticdsl` 命名空间被嵌套为 `pdk_chat_demo::agenticdsl`,导致:
+1. `commands/model_command.cpp` 找不到 `agenticdsl::ToolCallContext` (本可用其他 header 定义)
+2. `commands/command_globals.cpp` 找不到 `agenticdsl::ToolCoordinator`
+3. `chat_session.cpp` Impl 成员访问 `ITimerService::cancel` 等 incomplete type
+
+**根本原因**: 原 forward decl pattern 的 inherent fragility 被 Sprint 30 implementation 暴露. forward decl block 在 `chat_session.h` 是 GLOBAL scope, 但被 `commands/*.cpp` 在 `namespace pdk_chat_demo` 内 include 时, forward decl 被嵌套.
+
+**已尝试方案** (全部失败):
+1. 移除 `#include` + 仅 forward decl → Impl 成员访问 incomplete type
+2. `#include` 在 `chat_session.cpp` GLOBAL scope → namespace pollution 仍发生
+3. 移动 `#include` 到 chat_session.h 之前 → forward decl block 被遮蔽
+4. `::agenticdsl::ITimerService*` 前缀强制全局查找 → LSP stale cache + 实际编译仍 fail
+5. PIMPL + explicit destructor declaration → LSP cascade false positives
+6. revert 所有改动 → 回到 baseline
+
+**Mode 修正建议 (Sprint 31+)**:
+- **方案 A (推荐)**: 移除 `chat_session.h` 的 forward decl block, 改为每个 type include 完整 header (Robust 但需更新所有 commands/*.cpp)
+- **方案 B**: PIMPL + opaque handle (`void* timer_handle`), 完全隐藏 ITimerService 类型
+- **方案 C**: 拆分 `chat_session.h` 为 `_fwd.h` (只 forward decl) + `_impl.h` (完整 include), 调用方按需 include
+
+**后续 follow-ups**:
+- Sprint 31+ `chat-session-read-timeout` (Sprint 30 解锁) — 替换 `std::getline(std::cin, line)` 为 poll/read 管道化 read + timer-driven 真实超时 (本 change 仅周期性检查 shutdown, 不解决 getline 阻塞读 stdin)
+- 模式 #6 第 3 个消费者实际 ship (取决于上述方案选择)
+
+---
+
 ## 七、存档说明
 
 > 以下历史看板已归档: 它们的 Phase 0-4 追踪已由 `docs/active-status.md` 替代。
