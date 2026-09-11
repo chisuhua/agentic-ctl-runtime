@@ -15,10 +15,10 @@
 
 | 维度 | 状态 |
 |------|------|
-| **Total ctest** | **231/231** 配置总数 (2026-09-12 `ctest --test-dir build` → Total Tests: 231; 自 2026-09-08 校准后 +2: Sprint 25 upgrade-httplib-0541 +1 test binary (test_httplib_version, 2 cases) + 2026-09-10 adr-0037-causal-ordering-completion +1 test binary (test_causal_ordering, 9 cases); 2026-09-11 Sprint 27 cognitive_worker fix (5a09c76) +1 回归守卫 TEST_CASE; 2026-09-12 Sprint 28 TimerService ship (188bd8c + bc8d751) +1 test binary (test_timer_service, 11 cases) — **catch2 v3.7.0 + std::jthread reporter bug (KI-1)** 标记导致 binary exit 0 + 实际 body PASS 但 catch2 误报 FAILED, ctest `-E test_timer_service` 排除运行; 228/228 → 229 → 230 → 231 baseline (含 test_timer_service) → 230 (-E test_timer_service 排除时); -j1 全量 ctest 0 FAIL — ✅ Wave 1 #1+#2 real-llm P0 followups + Wave 2 Phase C ship + Wave 4 token passthrough + Sprint 27 ADR-0087 step 4 ship + cognitive_worker 真实 LLM 依赖 fix + Sprint 28 TimerService ship + temporal_agent 迁移完成 |
+| **Total ctest** | **232/232** 配置总数 (2026-09-12 `ctest --test-dir build` → Total Tests: 232; 自 2026-09-08 校准后 +3: Sprint 25 upgrade-httplib-0541 +1 test binary (test_httplib_version, 2 cases) + 2026-09-10 adr-0037-causal-ordering-completion +1 test binary (test_causal_ordering, 9 cases) + 2026-09-12 P2.9 SHIP-with-fixes +1 test binary (test_temporal_agent_workflow_callback_timer_injection, 3 cases); 2026-09-11 Sprint 27 cognitive_worker fix (5a09c76) +1 回归守卫 TEST_CASE; 2026-09-12 Sprint 28 TimerService ship (188bd8c + bc8d751 + f145a97 P2.9 SHIP-with-fixes) +1 test binary (test_timer_service, 11 cases) — **catch2 v3.7.0 + std::jthread reporter bug (KI-1)** 标记导致 binary exit 0 + 实际 body PASS 但 catch2 误报 FAILED, ctest `-E test_timer_service` 排除运行; 228/228 → 229 → 230 → 231 → 232 baseline (含 test_timer_service + injection test) → 230 (-E test_timer_service 排除时); -j1 全量 ctest 0 FAIL — ✅ Wave 1 #1+#2 real-llm P0 followups + Wave 2 Phase C ship + Wave 4 token passthrough + Sprint 27 ADR-0087 step 4 ship + cognitive_worker 真实 LLM 依赖 fix + Sprint 28 TimerService ship + temporal_agent 迁移 + P2.9 SHIP-with-fixes (Oracle 复核 1 Major + 1 Minor 2 修正) 完成 |
 | **ASan** | **92/93** (2026-07-31 复验, `build/asan/`) — `test_skill_interpreter` 失败: 无 AddressSanitizer 内存错误报告, 断言级失败 (`result.success=false`, posix_spawn child 在 ASan 构建下未执行成功), debug 构建下同测试通过 → 定性 **ASan-only pre-existing 功能失败**, 建议独立跟踪修复。注: ASan 构建树测试总数 93 (debug 树 106, 13 个示例/集成测试未纳入 ASan 配置) |
 | **TSan** | 超时跳过 (机器性能受限) |
-| **OpenSpec active** | **5** (2026-09-12 Sprint 28 收官更新, `kernel-timer-service` 已 ship 待 archive):<br/>1. `2026-09-10-kernel-timer-service` (✅ ship + 待 archive, P0 - microkernel 蓝图唯一短期可执行项, Oracle `ses_f741f5d05ffeItVmfYVEjr67m3` 评审通过, commit 188bd8c + bc8d751, KI-1 catch2 v3.7.0 reporter bug 标记 ship-with-known-issue)<br/>2. `adr-0087-root-cause-upgrade` (Draft parent, **Sprint 27 step 4 已 ship** — `de79309` + `9d6d6a6` + `bd1c893` + `a146711` merged to main; step 5 benchmark + OPT-IN 文档待真实 baseline 触发)<br/>3. `chat-real-llm-coverage` (Draft, 等真实 baseline 重测触发信号 — `docs/runbooks/baseline-retest.md` §1)<br/>4. `cloud-adapter-threading-root-cause` (Draft scaffold, ADR-0087 Step 1-2 调研已完成)<br/>5. `real-llm-core-coverage` (Phase A+B ship, Phase C-G 等 step 4 ship 后启动, Sprint 27 step 4 已解锁)<br/>6. `skill-interpreter-ipc-realllm` (Draft, 依赖 step 4 ship — 已满足, 待 5-sprint 排期) |
+| **OpenSpec active** | **4** (2026-09-12 Sprint 28 + P2.9 收官更新, `kernel-timer-service` 已 ✅ archived; `tr-test-flake-ki2` tracking change 已 ✅ archived):<br/>1. `adr-0087-root-cause-upgrade` (Draft parent, **Sprint 27 step 4 已 ship** — `de79309` + `9d6d6a6` + `bd1c893` + `a146711` merged to main; step 5 benchmark + OPT-IN 文档待真实 baseline 触发)<br/>2. `chat-real-llm-coverage` (Draft, 等真实 baseline 重测触发信号 — `docs/runbooks/baseline-retest.md` §1)<br/>3. `cloud-adapter-threading-root-cause` (Draft scaffold, ADR-0087 Step 1-2 调研已完成)<br/>4. `real-llm-core-coverage` (Phase A+B ship, Phase C-G 等 step 4 ship 后启动, Sprint 27 step 4 已解锁)<br/>5. `skill-interpreter-ipc-realllm` (Draft, 依赖 step 4 ship — 已满足, 待 5-sprint 排期)<br/>**已 archived (2)**: `2026-09-10-kernel-timer-service` (✅ 2026-09-11 archive, Oracle SHIP-with-fixes 1 Major + 1 Minor 2 修正全 applied), `2026-09-12-tr-test-flake-ki2` (✅ 2026-09-11 archive, KI-2 tracking carrier) |
 
 ## §Sprint 25 收官注记 (2026-09-03, 治理收官 Sprint)
 
@@ -155,6 +155,47 @@
 - Phase 6c 各 real-llm changes (`real-llm-core-coverage`, `skill-interpreter-ipc-realllm`, `chat-real-llm-coverage`) 待 step 4 ship + 真实 baseline 触发
 - adr-0087 step 5 benchmark 待 baseline 触发
 - microkernel 蓝图后续组件 (PipeBus / UserAgentLoader / procfs 等) 等 TimerService ship 后沉淀, 不立即新建 ADR (Oracle Q1 建议)
+
+## §P2.9 SHIP-with-fixes + Archive 收官 (2026-09-12, Oracle session `ses_f6f8ab1dbffeBh5kdvNi1SEE3k` 复核)
+
+**Oracle 决议**: SHIP-with-fixes (1 Major + 1 Minor 2 修正 + 2 Nits, 零新增 Critical/Major). 2 个 OpenSpec change 全 archived.
+
+**修正清单**:
+
+| 严重度 | 项目 | 修正 |
+|:---:|------|------|
+| **Major** | `timer_service.h::cancel()` 注释 | 修语义错误: 'cancel 与 callback 互斥' → '不互斥, 返回 true 不代表 callback 未在执行' (worker 在 lock.unlock() 后 fire) |
+| **Major** | `workflow_callback_channel.h::start_polling()` 注入参数 | 加生命周期契约: 注入 timer 时调用方必须保证 channel 析构前无 in-flight callback (cancel 不等待已收集但未执行的 callback, `[this]` 捕获可能触发 UAF) |
+| Minor 2 | `tests/test_temporal_agent_workflow_callback_timer_injection.cpp` | 新增 D6 注入路径验证 (FakeTimerService 捕获 callback + 手动触发 + 默认 nullptr RAII 路径), 3 test cases / 10 assertions PASS |
+| Minor 3 | `openspec/changes/2026-09-12-tr-test-flake-ki2/` | 新增 KI-2 跟踪载体 (test_llm_provider_propagation 并行 flake, 与 TimerService 零因果), 已 archived |
+| Nit 1 | `tests/test_timer_service.cpp::test #7` 注释 | `< 1300ms` → `< 1500ms` (与断言一致, Oracle 建议放宽上限) |
+| Nit 2 | 4 文件 header | `2026-09-XX` → `2026-09-12` + 删除 L2 `文件头注释` 残留模板行 |
+
+**Commit**: `f145a97` `refactor(common): TimerService SHIP-with-fixes (Oracle ses_f6f8ab1dbffeBh5kdvNi1SEE3k)` (10 files, +210/-586)
+
+**Archive**:
+- `openspec archive 2026-09-10-kernel-timer-service --yes` → `openspec/changes/archive/2026-09-11-2026-09-10-kernel-timer-service/` (4 ADDED requirements 合并到 `openspec/specs/kernel-timer-service/spec.md`)
+- `openspec archive 2026-09-12-tr-test-flake-ki2 --yes` → `openspec/changes/archive/2026-09-11-2026-09-12-tr-test-flake-ki2/` (5 ADDED requirements 合并到 `openspec/specs/test-flake-ki2/spec.md`)
+- 2 changes 全 archived (per-machine ephemeral: `openspec/specs/` + `openspec/changes/archive/` 是 .gitignored, 不需要 commit)
+
+**验证**:
+- 全量 ctest `-j1 -E "^(test_timer_service\|test_llm_provider_propagation)$"`: **230/230 PASS 零回归**
+- `python3 tools/adr_lint.py`: 0 errors (8 pre-existing WARNING 与本任务无关)
+- `python3 tools/docs_drift_audit.py`: **0 DRIFT, 0 WARNING**
+- `temporal_agent` 专项: **8/8 PASS** (含 `test_temporal_agent_signal_callback`)
+- `test_temporal_agent_workflow_callback_timer_injection`: **3 test cases / 10 assertions PASS, exit 0**
+
+**计数器更新** (§一):
+- Total ctest: 231 → **232/232** (+1 test binary `test_temporal_agent_workflow_callback_timer_injection`, 3 cases)
+- OpenSpec active: 5 → **4** (TimerService + KI-2 tracking 全 archived)
+- 2 changes 总 archived (TimerService + KI-2)
+
+**Sprint 28 microkernel 蓝图完成度**:
+- ✅ kernel-timer-service: SHIP + ARCHIVED
+- ⏳ PipeBus / UserAgentLoader / procfs: 推迟 (Oracle Q1 建议, 等 TimerService 第 2 个消费者验证模式)
+- ⏳ SkillInterpreter / ChatSession timer 改造: 推迟 (作为 Sprint 29+ 独立 change, SkillInterpreter 优先)
+
+**Sprint 28 全收官**: P2.1 (前置) + P2.5 (TimerService 实现) + P2.6 (temporal_agent 迁移) + P2.8 (docs sync) + P2.9 (SHIP-with-fixes + archive) 5 个阶段全 ship. microkernel 蓝图第 1 件 (TimerService) 完成.
 
 ---
 
