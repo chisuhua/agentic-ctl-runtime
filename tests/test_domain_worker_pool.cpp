@@ -544,8 +544,9 @@ TEST_CASE("DomainWorkerPool 4 workers concurrent real LLM via shared provider",
   // Wave 1 #2 (fix-cloud-adapter-multithreading) 已 ship:
   // LLMProviderFactory::create cloud 路径注入 SerializingDecorator (mutex + cv
   // 串行化 generate), 根除 N≥2 worker 并发 + Authorization + https 的 SIGSEGV.
-  // 本测试现恢复真实执行 (4 worker 共享 provider, 4 task 真实 deepseek).
-  // 真根因修复 (OpenSSL 3.0 + httplib 升级) 留 ADR-0087 follow-up.
+  // ADR-0087 Step 4 (Sprint 27): Step 1-3 root cause 修复 (OpenSSL 3.0 +
+  // httplib 0.54.1) ship 后, factory 默认无 SerializingDecorator (root cause 已修).
+  // 本测试现 4 worker 共享 provider 直连 deepseek, 验证 root cause fix 有效.
   auto cfg = agenticdsl::test::real_llm_config();
   auto provider = agenticdsl::test::real_llm_provider();
   ILLMProvider* shared = provider.get();

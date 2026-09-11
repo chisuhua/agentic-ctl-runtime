@@ -1,5 +1,6 @@
 #include "common/llm/llm_provider_factory.h"
 
+#include <iostream>
 #include <mutex>
 
 #include "common/llm/cloud_adapter.h"        // CloudLLMAdapter (OpenAI 兼容协议)
@@ -88,6 +89,11 @@ std::vector<std::string> LLMProviderFactory::dynamic_names() const {
 }
 
 std::unique_ptr<ILLMProvider> LLMProviderFactory::create(const LLMConfig& config) {
+  return create(config, CreateOptions{});
+}
+
+std::unique_ptr<ILLMProvider> LLMProviderFactory::create(const LLMConfig& config,
+                                                          const CreateOptions& opts) {
   std::string backend = config.provider;
   DynamicFactoryFn dynamic_factory;
   {
@@ -102,15 +108,16 @@ std::unique_ptr<ILLMProvider> LLMProviderFactory::create(const LLMConfig& config
   if (backend == "openai" || backend == "anthropic" || backend == "deepseek" ||
       backend == "minimax" || backend == "qwen" || backend == "moonshot" ||
       backend == "custom") {
-    // Wave 1 #2 (fix-cloud-adapter-multithreading): cloud 路径注入 SerializingDecorator
-    // 修复 N≥2 worker 并发 + Authorization + https 三者同时触发的 SIGSEGV.
-    // factory 层注入, 调用方无感知 (返回类型仍为 unique_ptr<ILLMProvider>).
-    // mock / llama 路径不包装 — 零性能影响 (B.3/B.4 mock 测试不变).
-    // ⚠️ NOT redundant: 牺牲并发 LLM 调用换取零 SIGSEGV. 真根因修复 (OpenSSL 3.0
-    // + httplib 升级) 见 follow-up ADR-0087.
     auto adapter = cloud_factory->create(config);
-    return std::make_unique<SerializingDecorator>(
-        std::move(adapter), "cloud-" + backend);
+    // ADR-0087 Step 4 (Sprint 27): root cause 升级 ship 后, 默认无 SerializingDecorator.
+    // opts.serializer = true 显式启用 (诊断 + 紧急降级).
+    if (opts.serializer) {
+      std::cerr << "[llm_provider_factory] WARNING: opts.serializer=true 启用 SerializingDecorator (mutex 串行化, 牺牲并发换取零 SIGSEGV 兜底);"
+                << " 用于诊断 httplib/OpenSSL 退化或紧急降级, 生产默认 false." << std::endl;
+      return std::make_unique<SerializingDecorator>(
+          std::move(adapter), "cloud-" + backend);
+    }
+    return adapter;
   }
   if (backend == "local" || backend == "llama") return llama_factory->create(config);
   return mock_factory->create(config);

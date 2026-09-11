@@ -1,9 +1,11 @@
 // tests/test_llm_provider_factory_decorator.cpp
 // 文件头注释
-// 功能描述：LLMProviderFactory 集成测试 — 验证 cloud 路径返回 SerializingDecorator 包装
-// 设计依据：openspec/changes/fix-cloud-adapter-multithreading/design.md §Factory 集成
-// 作者：AgenticDSL Wave 1 #2
-// 最后修改日期：2026-09-08
+// 功能描述：LLMProviderFactory 集成测试 — 验证 cloud 路径 OPT-IN SerializingDecorator
+//          包装 (ADR-0087 Step 4 默认无包装, opts.serializer = true 显式启用)
+// 设计依据：openspec/changes/adr-0087-root-cause-upgrade/design.md §Decision 3
+//          (Wave 1 #2 原始 fix-cloud-adapter-multithreading 默认包装行为已反转)
+// 作者：AgenticDSL Wave 1 #2 (Step 1-3 ship) + Sprint 27 Step 4 (this file)
+// 最后修改日期：2026-09-11
 
 #include "catch_amalgamated.hpp"
 
@@ -13,6 +15,8 @@
 #include "common/llm/serializing_decorator.h"
 
 #include <memory>
+#include <string>
+#include <vector>
 
 using namespace agenticdsl;
 
@@ -30,34 +34,22 @@ T* require_cast(ILLMProvider* p, const char* type_name) {
 
 }  // namespace
 
-// === Test 1: cloud 路径 (deepseek) 注入 SerializingDecorator ===
-TEST_CASE("LLMProviderFactory.create(deepseek) wraps SerializingDecorator",
+// === Test 1: cloud 路径 (deepseek) 默认路径 — ADR-0087 Step 4 默认无包装 ===
+TEST_CASE("LLMProviderFactory.create(deepseek) does NOT wrap SerializingDecorator by default",
           "[factory_decorator][unit]") {
   LLMConfig cfg;
   cfg.provider = "deepseek";
-  cfg.api_key = "test-key";  // CI 友好: 不真发请求, 只检查 wrapper 结构
+  cfg.api_key = "test-key";
   cfg.model = "deepseek-v4-flash";
 
   LLMProviderFactory factory;
   auto provider = factory.create(cfg);
 
   REQUIRE(provider != nullptr);
-
-  // 外层必须是 SerializingDecorator
-  auto* serializing = require_cast<SerializingDecorator>(
-      provider.get(), "SerializingDecorator");
-  REQUIRE(serializing != nullptr);
-
-  // 用途标签正确
-  REQUIRE(serializing->purpose() == "cloud-deepseek");
-
-  // 内层 (provider.inner()) 必须是 CloudLLMAdapter (经 raw inner_ 字段访问)
-  // 注: SerializingDecorator 继承 ILLMProvider 不继承 ILLMProviderDecorator,
-  // 所以无 inner() 方法; 改为检查 SerializingDecorator 内部状态 (concurrent_count_ = 0)
-  REQUIRE(serializing->concurrent_count() == 0);
+  // ADR-0087 Step 4: root cause 升级后默认无 SerializingDecorator
+  REQUIRE(dynamic_cast<SerializingDecorator*>(provider.get()) == nullptr);
 }
 
-// === Test 2: mock 路径不包装 SerializingDecorator ===
 TEST_CASE("LLMProviderFactory.create(mock) does NOT wrap SerializingDecorator",
           "[factory_decorator][unit]") {
   LLMConfig cfg;
@@ -67,11 +59,9 @@ TEST_CASE("LLMProviderFactory.create(mock) does NOT wrap SerializingDecorator",
   auto provider = factory.create(cfg);
 
   REQUIRE(provider != nullptr);
-  // Mock 路径零影响 (B.3/B.4 mock 测试性能不变)
   REQUIRE(dynamic_cast<SerializingDecorator*>(provider.get()) == nullptr);
 }
 
-// === Test 3: llama/local 路径不包装 SerializingDecorator ===
 TEST_CASE("LLMProviderFactory.create(llama) does NOT wrap SerializingDecorator",
           "[factory_decorator][unit]") {
   LLMConfig cfg;
@@ -81,12 +71,11 @@ TEST_CASE("LLMProviderFactory.create(llama) does NOT wrap SerializingDecorator",
   auto provider = factory.create(cfg);
 
   REQUIRE(provider != nullptr);
-  // 本地 llama 路径零影响
   REQUIRE(dynamic_cast<SerializingDecorator*>(provider.get()) == nullptr);
 }
 
-// === Test 4: 所有 cloud 后端都包装 (openai/anthropic/minimax/qwen/moonshot/custom) ===
-TEST_CASE("LLMProviderFactory.create wraps SerializingDecorator for all cloud backends",
+// === Test 4: 所有 cloud 后端默认都无 SerializingDecorator (Step 4 反转 Wave 1 #2 行为) ===
+TEST_CASE("LLMProviderFactory.create does NOT wrap SerializingDecorator for any cloud backend (default)",
           "[factory_decorator][unit]") {
   const std::vector<std::string> cloud_backends = {
       "openai", "anthropic", "deepseek", "minimax", "qwen", "moonshot", "custom"};
@@ -99,9 +88,63 @@ TEST_CASE("LLMProviderFactory.create wraps SerializingDecorator for all cloud ba
 
     auto provider = factory.create(cfg);
     REQUIRE(provider != nullptr);
-    auto* serializing = dynamic_cast<SerializingDecorator*>(provider.get());
-    REQUIRE(serializing != nullptr);
-    // 用途标签正确 (含 backend 名)
-    REQUIRE(serializing->purpose() == "cloud-" + backend);
+    REQUIRE(dynamic_cast<SerializingDecorator*>(provider.get()) == nullptr);
   }
+}
+
+TEST_CASE("LLMProviderFactory.create wraps SerializingDecorator when opts.serializer = true",
+          "[factory_decorator][unit]") {
+  const std::vector<std::string> cloud_backends = {
+      "openai", "anthropic", "deepseek", "minimax", "qwen", "moonshot", "custom"};
+  LLMProviderFactory factory;
+  LLMProviderFactory::CreateOptions opts;
+  opts.serializer = true;
+
+  for (const auto& backend : cloud_backends) {
+    LLMConfig cfg;
+    cfg.provider = backend;
+    cfg.api_key = "test-key";
+
+    auto provider = factory.create(cfg, opts);
+    REQUIRE(provider != nullptr);
+    auto* serializing = require_cast<SerializingDecorator>(
+        provider.get(), "SerializingDecorator");
+    REQUIRE(serializing != nullptr);
+    REQUIRE(serializing->purpose() == "cloud-" + backend);
+    REQUIRE(serializing->concurrent_count() == 0);
+  }
+}
+
+TEST_CASE("LLMProviderFactory.create with opts.serializer = false explicit matches default",
+          "[factory_decorator][unit]") {
+  LLMProviderFactory factory;
+  LLMProviderFactory::CreateOptions opts;
+  opts.serializer = false;
+
+  LLMConfig cfg;
+  cfg.provider = "deepseek";
+  cfg.api_key = "test-key";
+
+  auto provider = factory.create(cfg, opts);
+  REQUIRE(provider != nullptr);
+  REQUIRE(dynamic_cast<SerializingDecorator*>(provider.get()) == nullptr);
+}
+
+TEST_CASE("LLMProviderFactory.create with opts.serializer = true does NOT wrap mock/llama",
+          "[factory_decorator][unit]") {
+  LLMProviderFactory factory;
+  LLMProviderFactory::CreateOptions opts;
+  opts.serializer = true;
+
+  LLMConfig mock_cfg;
+  mock_cfg.provider = "mock";
+  auto mock_provider = factory.create(mock_cfg, opts);
+  REQUIRE(mock_provider != nullptr);
+  REQUIRE(dynamic_cast<SerializingDecorator*>(mock_provider.get()) == nullptr);
+
+  LLMConfig llama_cfg;
+  llama_cfg.provider = "llama";
+  auto llama_provider = factory.create(llama_cfg, opts);
+  REQUIRE(llama_provider != nullptr);
+  REQUIRE(dynamic_cast<SerializingDecorator*>(llama_provider.get()) == nullptr);
 }
