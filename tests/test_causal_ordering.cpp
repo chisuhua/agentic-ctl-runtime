@@ -292,13 +292,23 @@ TEST_CASE("DomainWorkerPool A→B 因果链 (DomainTask.parent_trace 透传)",
     std::lock_guard<std::mutex> lock(events_mutex);
     REQUIRE(completed_events.size() == 2);
 
-    const BusEvent& evt_a = completed_events[0];
-    const BusEvent& evt_b = completed_events[1];
+    auto find_event = [](const std::vector<BusEvent>& events, bool with_parent_trace) -> const BusEvent* {
+        for (const auto& e : events) {
+            if (with_parent_trace == e.payload.parent_trace.has_value()) {
+                return &e;
+            }
+        }
+        return nullptr;
+    };
+    const BusEvent* evt_a = find_event(completed_events, false);
+    const BusEvent* evt_b = find_event(completed_events, true);
+    REQUIRE(evt_a != nullptr);
+    REQUIRE(evt_b != nullptr);
 
-    REQUIRE(evt_a.payload.parent_trace == std::nullopt);
+    REQUIRE(evt_a->payload.parent_trace == std::nullopt);
 
-    REQUIRE(evt_b.payload.parent_trace.has_value());
-    REQUIRE(*evt_b.payload.parent_trace == "domain-task-a");
+    REQUIRE(evt_b->payload.parent_trace.has_value());
+    REQUIRE(*evt_b->payload.parent_trace == "domain-task-a");
 
-    REQUIRE(causal_order(evt_a, evt_b) == CausalRelation::ABeforeB);
+    REQUIRE(causal_order(*evt_a, *evt_b) == CausalRelation::ABeforeB);
 }
