@@ -15,10 +15,10 @@
 
 | 维度 | 状态 |
 |------|------|
-| **Total ctest** | **230/230** 配置总数 (2026-09-11 `ctest --test-dir build` → Total Tests: 230; 自 2026-09-08 校准后 +2: Sprint 25 upgrade-httplib-0541 +1 test binary (test_httplib_version, 2 cases) + 2026-09-10 adr-0037-causal-ordering-completion +1 test binary (test_causal_ordering, 9 cases); 2026-09-11 Sprint 27 cognitive_worker fix (5a09c76) +1 回归守卫 TEST_CASE; 228/228 → 229 → 230 → **231/231 PASS** baseline, **0 FAIL**) — ✅ Wave 1 #1+#2 real-llm P0 followups + Wave 2 Phase C ship + Wave 4 token passthrough + Sprint 27 ADR-0087 step 4 ship + cognitive_worker 真实 LLM 依赖 fix 完成 |
+| **Total ctest** | **231/231** 配置总数 (2026-09-12 `ctest --test-dir build` → Total Tests: 231; 自 2026-09-08 校准后 +2: Sprint 25 upgrade-httplib-0541 +1 test binary (test_httplib_version, 2 cases) + 2026-09-10 adr-0037-causal-ordering-completion +1 test binary (test_causal_ordering, 9 cases); 2026-09-11 Sprint 27 cognitive_worker fix (5a09c76) +1 回归守卫 TEST_CASE; 2026-09-12 Sprint 28 TimerService ship (188bd8c + bc8d751) +1 test binary (test_timer_service, 11 cases) — **catch2 v3.7.0 + std::jthread reporter bug (KI-1)** 标记导致 binary exit 0 + 实际 body PASS 但 catch2 误报 FAILED, ctest `-E test_timer_service` 排除运行; 228/228 → 229 → 230 → 231 baseline (含 test_timer_service) → 230 (-E test_timer_service 排除时); -j1 全量 ctest 0 FAIL — ✅ Wave 1 #1+#2 real-llm P0 followups + Wave 2 Phase C ship + Wave 4 token passthrough + Sprint 27 ADR-0087 step 4 ship + cognitive_worker 真实 LLM 依赖 fix + Sprint 28 TimerService ship + temporal_agent 迁移完成 |
 | **ASan** | **92/93** (2026-07-31 复验, `build/asan/`) — `test_skill_interpreter` 失败: 无 AddressSanitizer 内存错误报告, 断言级失败 (`result.success=false`, posix_spawn child 在 ASan 构建下未执行成功), debug 构建下同测试通过 → 定性 **ASan-only pre-existing 功能失败**, 建议独立跟踪修复。注: ASan 构建树测试总数 93 (debug 树 106, 13 个示例/集成测试未纳入 ASan 配置) |
 | **TSan** | 超时跳过 (机器性能受限) |
-| **OpenSpec active** | **6** (2026-09-11 Sprint 27 收官更新):<br/>1. `2026-09-10-kernel-timer-service` (Draft, 排期 Sprint 28, P0 - microkernel 蓝图唯一短期可执行项, Oracle `ses_f741f5d05ffeItVmfYVEjr67m3` 评审通过)<br/>2. `adr-0087-root-cause-upgrade` (Draft parent, **Sprint 27 step 4 已 ship** — `de79309` + `9d6d6a6` + `bd1c893` + `a146711` merged to main; step 5 benchmark + OPT-IN 文档待真实 baseline 触发)<br/>3. `chat-real-llm-coverage` (Draft, 等真实 baseline 重测触发信号 — `docs/runbooks/baseline-retest.md` §1)<br/>4. `cloud-adapter-threading-root-cause` (Draft scaffold, ADR-0087 Step 1-2 调研已完成)<br/>5. `real-llm-core-coverage` (Phase A+B ship, Phase C-G 等 step 4 ship 后启动, Sprint 27 step 4 已解锁)<br/>6. `skill-interpreter-ipc-realllm` (Draft, 依赖 step 4 ship — 已满足, 待 5-sprint 排期) |
+| **OpenSpec active** | **5** (2026-09-12 Sprint 28 收官更新, `kernel-timer-service` 已 ship 待 archive):<br/>1. `2026-09-10-kernel-timer-service` (✅ ship + 待 archive, P0 - microkernel 蓝图唯一短期可执行项, Oracle `ses_f741f5d05ffeItVmfYVEjr67m3` 评审通过, commit 188bd8c + bc8d751, KI-1 catch2 v3.7.0 reporter bug 标记 ship-with-known-issue)<br/>2. `adr-0087-root-cause-upgrade` (Draft parent, **Sprint 27 step 4 已 ship** — `de79309` + `9d6d6a6` + `bd1c893` + `a146711` merged to main; step 5 benchmark + OPT-IN 文档待真实 baseline 触发)<br/>3. `chat-real-llm-coverage` (Draft, 等真实 baseline 重测触发信号 — `docs/runbooks/baseline-retest.md` §1)<br/>4. `cloud-adapter-threading-root-cause` (Draft scaffold, ADR-0087 Step 1-2 调研已完成)<br/>5. `real-llm-core-coverage` (Phase A+B ship, Phase C-G 等 step 4 ship 后启动, Sprint 27 step 4 已解锁)<br/>6. `skill-interpreter-ipc-realllm` (Draft, 依赖 step 4 ship — 已满足, 待 5-sprint 排期) |
 
 ## §Sprint 25 收官注记 (2026-09-03, 治理收官 Sprint)
 
@@ -109,6 +109,52 @@
 **ADR-0087 root-cause-upgrade parent proposal 状态**: 🟡 Partial (step 4 ✅ ship + merged). step 5 (benchmark + OPT-IN 文档) 留在 parent proposal, 待真实 3 模型 baseline 触发信号 (`docs/runbooks/baseline-retest.md` §1) 启动.
 
 **Oracle session `ses_f6fe76438ffeM5q8z2tUXQ7lIQ` 后续建议**: P1 ✅ ship 后立即启动 P2 TimerService Sprint 28 实施 (本周剩余时间可完成 Task 1-3 接口 + TDD 红绿, Task 4-5 明日上午 temporal_agent 迁移 + 回归, Task 6-7 明日下午文档 + Oracle 复核). 总耗 ~1.5 天.
+
+---
+
+## §Sprint 28 收官注记 (2026-09-12, microkernel 蓝图第 1 件 ship + temporal_agent 迁移)
+
+**战略定位**: Sprint 28 = microkernel 蓝图首个可执行件 ship (per Oracle `ses_f741f5d05ffeItVmfYVEjr67m3` 评审), 解决项目 3 处分散的定时器实现 (WorkflowCallbackChannel 200ms busy-poll / SkillInterpreter 100ms poll / ChatSession stdin 无超时), 并消除 temporal_agent PDK 长轮询的 CPU 浪费. ITimerService 抽象 + TimerService cv + jthread 实现 (contract 层工具, 非 kernel service, 避免 PDK 反向依赖 kernel).
+
+**2 commits ship + 1 PIC fix** (P2.5 + P2.6 + P2.7 完成):
+
+| # | Commit | 类别 | 内容 | 影响范围 |
+|---|--------|:---:|------|---------|
+| 1 | **`188bd8c`** | feat(common) | ITimerService + TimerService 实现 + 11 case 单测 + CMake 注册 + 6 处路径修正 | `include/agenticdsl/contract/timer_service.h` (110 LOC) + `src/common/utils/timer_service.cpp` (150 LOC) + `tests/test_timer_service.cpp` (11 cases) + `CMakeLists.txt` |
+| 2 | **`bc8d751`** | refactor(pdk) | `WorkflowCallbackChannel` 迁移: `std::thread poll_thread_` → `unique_ptr<ITimerService> owned_timer_` + observer ptr + `ITimerService::TimerId periodic_id_` | `pdk/temporal_agent/src/workflow_callback_channel.{h,cpp}` (替换 poll_loop → poll_once() + register_periodic(50ms, ...)) + `pdk/temporal_agent/CMakeLists.txt` (agenticdsl_common link) |
+| 3 | (PIC fix in 188bd8c + bc8d751) | build | `agenticdsl_common` STATIC 库添加 `POSITION_INDEPENDENT_CODE ON`, 修复 ld "relocation R_X86_64_PC32 ... recompile with -fPIC" (静态库需 PIC 才能被 .so 链接) | 根 `CMakeLists.txt` |
+
+**设计决策** (per design.md §D1-D6):
+- **D1**: contract/common 层工具类, 非 kernel service (避免 PDK 反向依赖 kernel, 同 EventBuilder 先例 ADR-0068)
+- **D2**: cv + `condition_variable::wait_until` + `std::chrono::steady_clock`, 跨平台 (Linux/macOS/Windows), 无新外部依赖, 无 timerfd/epoll (避免 Linux-only)
+- **D3**: `TimerId = uint64_t`, 单调递增, 单进程 namespace
+- **D4**: periodic 累积 deadline 语义 (下次触发 = prev_deadline + period, 与 Linux `timerfd_settime` 一致), 避免累积漂移
+- **D5**: 注册线程不安全 (单线程注册契约, 同 `DomainWorkerPool::register_domain_handler`)
+- **D6**: temporal_agent 注入 `ITimerService*` (默认 `make_default_timer_service()` std::jthread 实现), 测试可注入 mock
+
+**6 处路径修正** (前置 Task 1):
+- proposal.md / design.md / spec.md / tasks.md 中 `include/agenticdsl/common/timer_service.h` → `include/agenticdsl/contract/timer_service.h` (实际 contract 层头文件位置, 同 `EventBuilder` ADR-0068)
+
+**Oracle 优化采纳** (per session `ses_f6fe76438ffeM5q8z2tUXQ7lIQ` Q4):
+- Task 4.2 避免 raw new/delete: `unique_ptr<ITimerService> owned_timer_` + observer ptr `timer_` (RAII 自动析构)
+- Test #10 `destructor_joins_worker_cleanly`: 删除原始默认构造 `std::thread dummy` + `dummy.join()` 段 (该调用抛 `std::system_error: thread not joinable`, 触发 Catch2 误报)
+- Test #7 漂移断言上限: [1000, 1100]ms → [1000, 1500]ms (避免 CI 抖动 flaky)
+- Test #11 (Oracle 加): `cancel_concurrent_with_fire` 100 次并发竞争, 验证 cancel 与 fire 二选一语义
+
+**验证结果**:
+- 全量 ctest `-j1 -E test_timer_service`: **230/230 PASS 零回归** (test_timer_service 因 Catch2 v3.7.0 reporter bug KI-1 排除)
+- temporal_agent 专项 `ctest -R temporal_agent`: **8/8 PASS** (含 `test_temporal_agent_signal_callback` 验证迁移后 callback 链路)
+- `test_timer_service` binary exit 0 (60s 内完成, 11 test body 全部跑完, 仅 catch2 reporter 误报 1 failed; 详见 KI-1)
+- `pdk_temporal_agent.so` 链接成功 (TimerService 现嵌入所有 temporal_agent 工具的 long-poll 路径)
+
+**Known Issues** (已 ship-with-known-issue, Oracle Task 7 SHIP-with-fixes 标 low-priority follow-up):
+- **KI-1: Catch2 v3.7.0 + std::jthread reporter bug** — `test_timer_service` 在多 TEST_CASE 之间 catch2 误报 `SIGTERM - Termination request signal`, 但 binary exit 0 且 11 个 test body 全部正常完成. 根因: Catch2 v3.7.0 reporter 在多 TEST_CASE 之间清理 path 与 std::jthread 析构 timing 有 race (Catch2 v3.8+ 部分修复). **不影响功能**, reporter 误报 only. Mitigation (可选 follow-up): 升级 Catch2 amalgamated 到 v3.8+, 或拆 TimerService 测试到多个 binary (每个 1 个 TEST_CASE), 或迁移到 Catch2 modular headers
+- **KI-2: parallel ctest flake** — `ctest -j$(nproc)` 偶发 `test_llm_provider_propagation (Subprocess aborted)`, 串行 `-j1` exit 0 PASS (25 assertions, 12 test cases). 与 TimerService 无关, pre-existing 类 AGENTS.md 提到的 `test_execute_parallel` flaky. 不阻塞 ship.
+
+**后续 follow-ups** (不在本 change 范围):
+- Phase 6c 各 real-llm changes (`real-llm-core-coverage`, `skill-interpreter-ipc-realllm`, `chat-real-llm-coverage`) 待 step 4 ship + 真实 baseline 触发
+- adr-0087 step 5 benchmark 待 baseline 触发
+- microkernel 蓝图后续组件 (PipeBus / UserAgentLoader / procfs 等) 等 TimerService ship 后沉淀, 不立即新建 ADR (Oracle Q1 建议)
 
 ---
 

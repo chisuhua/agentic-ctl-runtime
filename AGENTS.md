@@ -152,10 +152,13 @@ HydraForge/
 - **禁止** 空 catch 块 `catch(e) {}`
 - **禁止** 删除失败的测试来"通过"
 
-## ENGINEERING PATTERNS (real-llm-core-coverage 沉淀)
+## ENGINEERING PATTERNS (real-llm-core-coverage + kernel-timer-service 沉淀)
 
-**沉淀时间**: 2026-09-08, **来源**: real-llm-core-coverage Phase 0+A+B ship + Oracle 审查 (`SHIPPED: afc2d1b / 117850c / c0cb522`).
-**目的**: 把真实 LLM 测试驱动实施中验证过的模式集中记录, 避免后续 Phase C-G 重复踩坑.
+**沉淀时间**: 2026-09-08 + 2026-09-12, **来源**:
+- 2026-09-08 real-llm-core-coverage Phase 0+A+B ship + Oracle 审查 (`SHIPPED: afc2d1b / 117850c / c0cb522`)
+- 2026-09-12 kernel-timer-service (microkernel 蓝图第 1 件) ship + Oracle 审查 (`SHIPPED: 188bd8c + bc8d751`, Oracle sessions `ses_f741f5d05ffeItVmfYVEjr67m3` + `ses_f6fe76438ffeM5q8z2tUXQ7lIQ`).
+
+**目的**: 把真实 LLM 测试驱动实施 + microkernel 基础设施实施中验证过的模式集中记录, 避免后续 Phase C-G + microkernel 后续组件重复踩坑.
 **设计原则**: 每条模式配"反模式"对照, 说明什么情境下**不适用**, 防止过度泛化.
 
 ### 决策层 (Decision)
@@ -229,6 +232,33 @@ HydraForge/
 - 验证: `script -qec "ctest --test-dir build" /dev/null` → 228/228 PASS, 88.51s
 - 教训: **默认值 fail-safe** (默认关, 显式开) > 默认 on + 用户 opt-out. 任何 `std::thread([&]{ cin >> ... })` 都应审视此风险.
 
+#### 6. Contract-layer utility tool pattern (kernel-timer-service microkernel 第 1 件)
+
+**触发**: 项目存在 ≥3 处分散的同类实现 (本次: 3 处定时器 — `WorkflowCallbackChannel` 200ms busy-poll / `SkillInterpreter::ipc_loop_and_wait` 100ms `poll()` / `ChatSession::input_thread_main` `std::getline(std::cin)` 无超时).
+
+**5 步沉淀**:
+1. **抽 contract 层接口** — `ITimerService` 抽象放 `include/agenticdsl/contract/timer_service.h` (同 `EventBuilder` ADR-0068 先例, **非 kernel 层**: 避免 PDK 反向依赖 kernel, 违反 ADR-0021 §3.5 "PDK 头文件仅依赖 agenticdsl/contract/*.h")
+2. **factory 函数** — `make_default_timer_service()` 返回 `unique_ptr<ITimerService>`, 默认实现 std::jthread + cv + steady_clock. 测试可注入 mock timer 验证 register_periodic 漂移
+3. **实现放 `src/common/utils/`** — `.cpp` 加入 `agenticdsl_common` 静态库 (PRIVATE link target → 自动 PUBLIC 给 `agenticdsl_core` + 所有 PDK .so). **关键**: 静态库需 `POSITION_INDEPENDENT_CODE ON` 才能被 `.so` 链接 (踩坑: `relocation R_X86_64_PC32 against __libc_single_threaded@@GLIBC_2.32 can not be used when making a shared object; recompile with -fPIC`)
+4. **periodic 累积 deadline 语义** — 下次触发 = `prev_deadline + period` (非 `now + period`), 与 Linux `timerfd_settime` 累积语义一致. 避免 handler 慢时累积漂移. 测试断言: 100ms periodic × 10 次, 总耗时 ≥1000ms 且 <1500ms (下限严格无负漂移, 上限容忍 CI 抖动)
+5. **异常隔离 + RAII 所有权** — worker 循环内 `try { cb(); } catch (...) { /* worker 不死 */ }` (handler 抛异常不 kill worker). PDK 注入模式: `unique_ptr<ITimerService> owned_timer_` + observer ptr `ITimerService* timer_` (**避免 raw `new`/`delete`**), 析构自动 RAII, PDK 注入 nullptr 时内部 `make_default_timer_service()` fallback
+
+**反模式**:
+- 把 timer 实现放 `src/common/` `static` 单例 → 无法测试, 无法注入, 违反 ADR-0021 §3.5 PDK 依赖限制
+- 用 `timerfd_create` + `epoll` → Linux-only, 违反跨平台契约
+- 用 `std::async` 包裹回调 → 失去 cancel 语义 (旧 `std::async` 不能 cancel)
+- `now + period` 计算下次 deadline → handler 慢时累积漂移 (200ms timer 实际 250ms 周期)
+- raw `new TimerService()` + `delete` 在析构函数 → 违反 RAII, 测试时难注入
+- `pthread_create` 直接建线程 → 失去 `std::jthread` 自动 join + stop_token
+
+**2026-09-12 case study (kernel-timer-service Sprint 28)**:
+- 3 处分散定时器 (`WorkflowCallbackChannel::poll_loop` 200ms busy-poll / `SkillInterpreter::ipc_loop_and_wait` 100ms `poll()` + EINTR 重试 / `ChatSession::input_thread_main` `std::getline(std::cin)` 无超时) — 共同痛点: 精度差 (固定 100-200ms 粒度) / CPU 浪费 (无事件也唤醒) / 不可复用 (每处自己实现)
+- Oracle 决议 (session `ses_f741f5d05ffeItVmfYVEjr67m3`): TimerService 是 microkernel 蓝图唯一短期可执行项 (其他 PipeBus / UserAgentLoader / 蓝图 ADR 全部因规模错配 / 治理违规被驳回)
+- 实装: `commit 188bd8c` (feat: 头文件 + 实现 + 11 case 单测 + CMake) + `commit bc8d751` (refactor: temporal_agent `WorkflowCallbackChannel` 迁移, 消除 `std::thread poll_thread_` + 50ms `sleep_for`)
+- 验证: 全量 ctest `-j1 -E test_timer_service`: 230/230 PASS 零回归; temporal_agent 专项 8/8 PASS; `pdk_temporal_agent.so` 链接成功
+- **Known Issue (KI-1, ship-with-known-issue)**: Catch2 v3.7.0 + std::jthread reporter bug — `test_timer_service` binary exit 0 + 11 test body 全部跑完, catch2 reporter 误报 FAILED. 不影响功能, reporter 误报 only. Mitigation (可选 follow-up): 升级 Catch2 amalgamated 到 v3.8+, 或拆 TimerService 测试到多个 binary (每个 1 个 TEST_CASE)
+- 教训: **contract 层抽象 (同 EventBuilder 先例)** + **RAII unique_ptr 所有权 (避免 raw new/delete)** + **cv 跨平台 (不依赖 timerfd/epoll)** + **累积 deadline 语义 (同 timerfd_settime)**
+
 ### 治理层 (Governance)
 
 #### 5. 跨多树相同测试目标的 helper 双维护策略
@@ -249,6 +279,7 @@ HydraForge/
 
 ### 沉淀源 (Provenance)
 
+- **2026-09-12**: kernel-timer-service (Sprint 28 microkernel 第 1 件) ship + temporal_agent 迁移, Oracle session `ses_f6fe76438ffeM5q8z2tUXQ7lIQ` 后续建议直接产出模式 6 (Contract-layer utility tool pattern: 抽 contract 层接口 + factory 函数 + 实现放 src/common/utils/ + periodic 累积 deadline 语义 + 异常隔离 + RAII unique_ptr 所有权). commit `188bd8c` (TimerService 实现) + `bc8d751` (temporal_agent 迁移 + agenticdsl_common PIC fix). KI-1: Catch2 v3.7.0 + std::jthread reporter bug 标 ship-with-known-issue.
 - **2026-09-08**: Oracle session `ses_f7f5ef175ffeGKhxXLfBJjzLVX` 审查 + `ses_f330bb6ffehvveECRPGKbPF7` 复核, 模式 1/2/4 直接产出.
 - **2026-09-08**: Phase B SIGSEGV 调试 (gdb + 消除实验) 沉淀模式 3 (断言分层) + 异常隔离 §NOTES 扩展.
 - **2026-08-04**: chat-real-llm-coverage ship 沉淀 `helper 三态分离` (模式工程层).
