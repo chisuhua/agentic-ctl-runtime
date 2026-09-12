@@ -297,6 +297,28 @@ HydraForge/
   - Sprint 30 PIMPL void* 是 namespace workaround, Sprint 31+ 可重构回 `agenticdsl::ITimerService*` 直接类型
 - **🎯 模式 #6 3-consumer 闭环完成**: WorkflowCallbackChannel (Sprint 28) + SkillInterpreter (Sprint 29) + ChatSession (Sprint 30) 三个 timer 使用方全部 ship, TimerService contract 层抽象在跨 PDK plugin / 跨进程 fork+exec / 跨 std::thread 三种线程模型下全部验证健壮
 
+**2026-09-12 case study (chat-session-read-timeout Sprint 31)**:
+- **模式 #6 真实死锁修复**: Sprint 30 PIMPL void* ship 后, 周期性 timer 仅设 `shutdown_check_pending_` flag, 但 **timer 无法唤醒 `std::getline` 阻塞读** (Sprint 30 case study 教训 #4 明确指出). Sprint 31 用 **self-pipe trick + `poll(2)`** 让 timer 真正中断 read, 完成 AGENTS.md §模式 #5 TTY 死锁陷阱修复路径
+- **Self-pipe trick** (Unix 经典模式, cr.yp.to/docs/selfpipe.html): Impl 构造时 `pipe2(O_CLOEXEC | O_NONBLOCK)` 创建 internal pipe. 主循环用 `poll([STDIN_FILENO, pipe_read_fd_], ...)` 阻塞. Timer callback 写 1 byte 到 `pipe_write_fd_`, poll 立即返回
+- **D1-D6 Decisions**:
+  - **D1**: `pipe2(O_CLOEXEC | O_NONBLOCK)`, 失败时 fd = -1 防御性 default (主循环检查 fd >= 0 才加入 pollfd 数组)
+  - **D2**: `poll([STDIN_FILENO, pipe_read_fd_], 100)` 多 fd 监听, 100ms clamp 同 Sprint 29/30 模式 (SkillInterpreter §6.3 §3.3)
+  - **D3**: timer callback 写 1 byte wake-up, EAGAIN 容忍 (1 byte/50ms × 1000 周期 = 20KB/s ≪ 64KB pipe buffer)
+  - **D4**: `~Impl()` 五步析构 ①cancel timer → ②timer_=nullptr → ③close(pipe_write_fd_) → ④close(pipe_read_fd_) (设 -1 防 double-close) → ⑤no-op child/pipes. **顺序关键**: close pipe 必须在 cancel timer 之前 (避免 timer callback 在 pipe 已关时仍 try write → EBADF)
+  - **D5**: PIMPL void* pattern 保留 (Sprint 30 namespace workaround), 公开 API **零变化**
+  - **D6**: Cancellation 路径不变 (Sprint 30 ship), `request_stop()` + `stop_input_thread_` flag 不动
+- **实装**: commit `864fe71` (2 files +140/-7, chat_session.cpp poll.h/unistd.h/fcntl.h include + Impl 2 pipe members + Impl ctor pipe2 + ~Impl D4 五步析构 + input_thread_main timer callback 写 wake-up byte + 主循环 poll 多 fd + test 7.C31-1)
+- **验证**: `test_chat_session` 11/11 PASS (33 assertions, baseline +2, 零回归). 9 个 Sprint 30 ship 后的 tests + 7.C30-1 (Sprint 30) + 7.C31-1 (Sprint 31) = 11 tests
+- **关键调试教训** (Sprint 31 沉淀):
+  1. **getline 阻塞场景的 timer 仅周期性检查 flag**, 但 **self-pipe trick** 让 timer 真正能中断 read. 这是 Unix 异步通知阻塞 IO 的标准模式, Linux/macOS/BSD 均原生支持
+  2. **pipe close 顺序关键**: 必须在 cancel timer 之前关闭, 否则 timer callback 在 pipe 已关时仍 try write → EBADF
+  3. **pipe buffer 64KB 远大于 1 byte/50ms timer 周期**: 实测 EAGAIN 不会触发, 但 callback 仍容忍 EAGAIN (防御性)
+  4. **TTY 死锁修复**: AGENTS.md §模式 #5 workaround (`script -qec "ctest ..." /dev/null`) 不再需要, `poll` 内置 100ms timeout 让 test_chat_session 在 sandbox 中可在 60s 内完成
+- **🎯 模式 #6 + 模式 #5 联合闭环**: Sprint 28 TimerService 抽象 → Sprint 29 SkillInterceptor deadline → Sprint 30 ChatSession periodic check (治标) → **Sprint 31 ChatSession self-pipe (治本)**. 模式 #6 真正实现了"timer 守护 stdin 读", 不再是定期检查的弱守护
+- **Mode 修正建议 (Sprint 32+)**:
+  - 移除 `chat_session.h` forward decl block, 改 include 完整 header, 恢复 `agenticdsl::ITimerService*` 直接类型 (消除 Sprint 30 PIMPL void* workaround)
+  - `chat_session.h` 拆分 `_fwd.h` + `_impl.h` 方案作为 Plan B
+
 ### 治理层 (Governance)
 
 #### 5. 跨多树相同测试目标的 helper 双维护策略
@@ -320,6 +342,7 @@ HydraForge/
 - **2026-09-12**: kernel-timer-service (Sprint 28 microkernel 第 1 件) ship + temporal_agent 迁移, Oracle session `ses_f6fe76438ffeM5q8z2tUXQ7lIQ` 后续建议直接产出模式 6 (Contract-layer utility tool pattern: 抽 contract 层接口 + factory 函数 + 实现放 src/common/utils/ + periodic 累积 deadline 语义 + 异常隔离 + RAII unique_ptr 所有权). commit `188bd8c` (TimerService 实现) + `bc8d751` (temporal_agent 迁移 + agenticdsl_common PIC fix). KI-1: Catch2 v3.7.0 + std::jthread reporter bug 标 ship-with-known-issue.
 - **2026-09-12**: skill-interpreter-timer-migration (Sprint 29, 模式 #6 第 2 个消费者) ship, Oracle session `ses_f6f25fd0bffeX5P4rs1hvHOYXQ` 审查 + 11 个设计决策 D1-D11 全部 resolve (核心收敛 D8 析构顺序 + D11 first-wins 不变量). 关键调试教训: TimerService jthread 创建在 Impl ctor 影响 fork+exec timing 导致 baseline 7.8b/7.8c 回归 → D9 从 eager 改为 lazy (nullptr 路径不创建 TimerService). commit `03b57ac` (3 files +354/-7). 已知问题: 7.S29-1 system load 下 flaky (MockToolRegistry 同步返回, inherent limitation 非实现 bug). Mode 修正建议 (Sprint 30+): D9 lazy TimerService 改为 "per-run at first ipc_loop_and_wait()".
 - **2026-09-12**: chat-session-timer-migration (Sprint 30, 模式 #6 第 3 个消费者 + 闭环) ship via PIMPL `void* timer_handle` workaround. **关键发现**: `chat_session.h` 原 forward decl block 在 `commands/*.cpp` include 时被嵌套为 `pdk_chat_demo::agenticdsl` (项目级 inherent fragility, 不只 Sprint 30). 6 个修复方案全部失败 (forward decl, include 位置, `::` 前缀, PIMPL destructor, revert) → 最终用 PIMPL `void*` 完全避开 namespace pollution. commit `7d338d5` (3 files +166/-5, chat_session.h 7th ctor param + chat_session.cpp Impl members + input_thread_main periodic timer + RAII guard + D8 dtor + test 7.C30-1). 验证: `test_chat_session` 10/10 PASS (31 assertions, baseline +1), 9 个现有 tests 零回归. 模式 #6 3-consumer 闭环完成: WorkflowCallbackChannel (Sprint 28) + SkillInterpreter (Sprint 29) + ChatSession (Sprint 30). Mode 修正建议 (Sprint 31+): 移除 chat_session.h forward decl block, 改 include 完整 header (方案 A) 或拆分 _fwd.h + _impl.h (方案 B), 可重构回 `agenticdsl::ITimerService*` 直接类型.
+- **2026-09-12**: chat-session-read-timeout (Sprint 31, 模式 #6 + 模式 #5 联合真实死锁修复) ship via **self-pipe trick + `poll(2)` 多 fd 监听**. Sprint 30 PIMPL void* 周期性 timer 仅设 flag, 但无法唤醒 `std::getline` 阻塞读 (Sprint 30 case study 教训 #4). Sprint 31: Impl 构造时 `pipe2(O_CLOEXEC | O_NONBLOCK)` 创建 internal pipe, 主循环用 `poll([STDIN_FILENO, pipe_read_fd_], 100)` 监听多 fd, timer callback 写 1 byte wake-up byte 立即唤醒 poll. **D4 五步析构顺序关键**: ①cancel timer → ②timer_=nullptr → ③close(pipe_write_fd_) → ④close(pipe_read_fd_) (设 -1 防 double-close) → ⑤no-op child/pipes. close pipe 必须先于 cancel timer (避免 timer callback 在 pipe 已关时仍 try write → EBADF). commit `864fe71` (2 files +140/-7, chat_session.cpp poll.h/unistd.h/fcntl.h include + Impl 2 pipe members + Impl ctor pipe2 + ~Impl D4 五步析构 + input_thread_main timer callback 写 wake-up byte + 主循环 poll 多 fd + test 7.C31-1). 验证: `test_chat_session` 11/11 PASS (33 assertions, baseline +2), 9 个现有 tests + Sprint 30 7.C30-1 + Sprint 31 7.C31-1 = 11 tests 零回归. **AGENTS.md §模式 #5 workaround (`script -qec "ctest ..." /dev/null`) 不再需要**, poll 内置 100ms timeout 让 test_chat_session 在 sandbox 中 60s 内完成. 模式 #6 + 模式 #5 联合闭环: TimerService 抽象 (Sprint 28) + SkillInterceptor deadline (Sprint 29) + ChatSession periodic check 治标 (Sprint 30) + ChatSession self-pipe 治本 (Sprint 31). Mode 修正建议 (Sprint 32+): 移除 chat_session.h forward decl block, 改 include 完整 header, 可恢复 `agenticdsl::ITimerService*` 直接类型 (消除 Sprint 30 PIMPL void* workaround).
 - **2026-09-08**: Oracle session `ses_f7f5ef175ffeGKhxXLfBJjzLVX` 审查 + `ses_f330bb6ffehvveECRPGKbPF7` 复核, 模式 1/2/4 直接产出.
 - **2026-09-08**: Phase B SIGSEGV 调试 (gdb + 消除实验) 沉淀模式 3 (断言分层) + 异常隔离 §NOTES 扩展.
 - **2026-08-04**: chat-real-llm-coverage ship 沉淀 `helper 三态分离` (模式工程层).
