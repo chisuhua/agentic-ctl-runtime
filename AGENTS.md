@@ -383,6 +383,39 @@ HydraForge/
   3. **`stop_input_thread_` flag 在 dispatch_llm_generate 内部修改**: Impl 成员, D1 timeout 分支设 true, IPC loop 在 while loop 顶部 check. 比 external request_stop() 更直接 (Wave 30 已 ship pattern)
 - **设计原则**: D1 IPC 退出路径不依赖 kernel 自动行为 (pipe close, EOF detection), 而是用 explicit flag + 显式检测. 与 Wave 4.5 D1 timeout 配合形成完整防护
 
+**2026-09-12 case study (wave-4-7-ipc-loop-hang-fix Wave 4.7 — Oracle verdict)**:
+- **核心价值**: 真正修复 Wave-4.5-1 test hang 15s. Oracle session `ses_xx` 审查发现 Wave 4.5 + Wave 4.6 ship 的修复均未触达**真正 root cause**: `worker.join()` 在 `if (!done.load())` 检查**之前**无条件执行. Wave 4.5 commit `43bcbd8` 引入 bug, 阻塞 worker hang 时整个 timeout 分支不可达. Wave 4.6 `f06802f` 修复了 IPC loop 主路径但**未触及根因**, 治不了. Wave 4.7 attempt #1 (close_fd pipe fds) 也基于错误诊断 (member vs local fd) — 同样在死代码路径. Oracle 审查纠正诊断 + 给出 4 项修复
+- **Oracle 关键发现 — 真正 root cause**:
+  - `git show 43bcbd8` 证实 line 836 (旧) `worker.join();` 在 `cv.wait_for` 之后 + `if (!done.load())` 之前无条件执行
+  - 若 worker hang (BlockingLLMProvider), `cv.wait_for` 超时返回后, 旧 join 永久阻塞 → 整个 timeout 分支 (kill_retry/detach) 不可达
+  - 测试 hang 15s 是 test framework timeout, 不是 `cap.timeout_ms = 200ms`. 解释 close_fd 改动后测试仍 hang
+- **Oracle 顺带发现 — D1 设计的 latent UB**:
+  - Wave 4.5 D1 lambda 用 `[&]` 捕获 stack 局部 (`result_ptr`, `m`, `cv`, `done`, `eptr`)
+  - detach 后 dispatch 返回, slow-but-finite provider 醒来时写已销毁栈 → 必现 crash
+  - BlockingLLMProvider 永远不醒, 测试掩盖. 真实 LLM 慢响应场景会触发. 须同 fix 修复
+- **Oracle 顺带发现 — SIGPIPE 暴露面**:
+  - 代码库**全库无 `signal(SIGPIPE, SIG_IGN)` handler**, 默认 action 是 kill 父进程
+  - timeout 分支修复后, dispatch 返回 false 后 IPC loop write_line 到已 SIGKILL 的 child pipe → SIGPIPE → 父进程崩溃
+  - 须加 stop_input_thread_ check before write_line
+- **4 项修复 (commit `8979b20`)**:
+  1. **删除 line 836 旧 worker.join()** (Oracle 关键发现): cv.wait_for 后**先** `if (!state->done.load())` 检查, 再决定 detach (timeout) 或 join (success).
+  2. **heap-化 SharedState** (`auto state = std::make_shared<SharedState>()`): 把 `result_ptr`, `eptr`, `done`, `m`, `cv` 从 stack 移至 heap. lambda 按值捕获 `[state, token, llm_provider, prompt]` (避免悬垂引用)
+  3. **stop_input_thread_ check before write_line** (line 602): `if (stop_input_thread_.load()) break;` 跳过写到已 SIGKILL 的 child pipe
+  4. **IPC loop reap 逻辑加 stop_input_thread_ 检查** (line 690+): WIFSIGNALED + SIGKILL + `r.error_code == Unknown` → 若 `stop_input_thread_` 设 (D1 主动 kill) → `ErrorCode::Abort`; 否则 `ErrorCode::Crash` (自然 SIGKILL, e.g. OOM killer)
+- **新增 regression guard `Wave-4.7-1` test** (tests/test_skill_interpreter.cpp):
+  - 验证 `result.error_code == ErrorCode::Abort` (D1 SIGKILL 翻译)
+  - 验证 `elapsed_ms < 500` (回归守卫 line 836 worker.join() ordering bug — 回退则 hang 15s)
+  - 4 个 core contract + 1 regression guard contract
+- **已知问题** (无新增):
+  - 7.S29-1 Sprint 29 pre-existing flaky test (AGENTS.md 早记录): MockToolRegistry 同步返回导致 child 在 firer fire timer 前完成. 单独跑 6/6 PASS, inherent limitation 非实现 bug. **非 Wave 4.7 回归**
+- **关键调试教训** (Wave 4.7 沉淀):
+  1. **Oracle 审查纠正诊断**: 自我诊断"member vs local fd"表面正确但未触及根因. Oracle `git show 43bcbd8` 直接看到 join 在 !done 之前, 一行定真凶. **教训**: 复杂 hang 调试先 `git show` + `git blame` 历史 commit 找代码引入点, 不靠推理
+  2. **D1 detach 设计需 heap-化 shared state**: stack 局部 + detach = 悬垂引用 UB. 即便测试用例 (BlockingLLMProvider 永远不醒) 掩盖, 真实场景会 crash. **教训**: 任何 `[&]` 捕获 + `detach()` 模式都是 latent UB, 必须 heap-化共享变量
+  3. **SIGPIPE handler 缺失是常见盲区**: Linux 默认 SIGPIPE 是 kill 进程. timeout/网络断开场景触发 write → 进程崩溃. **教训**: 启动时 `signal(SIGPIPE, SIG_IGN)` 一次, 或 stop flag check before write
+  4. **AGENTS.md 沉淀渐进式是事实**: Wave 4.5 → Wave 4.6 → Wave 4.7 (本 change) 3 个连续 ship, 每步在前一基础上改进, 最终方案在 Oracle 审查后才明确. **教训**: 不怕中途部分 ship, 记录 known issue 让 Oracle 后续审查明确方向
+- **设计原则 (Wave 4.7 最终)**: D1 timeout 防护 = worker thread + cv.wait_for + 正确顺序 join/detach (先检查 done) + heap-allocated shared state + SIGPIPE 防护 + Abort/Crash 语义区分. 5 层防护, 缺一不可
+- **模式 #6 真正闭环**: Sprint 28 TimerService 抽象 → Sprint 29 SkillInterceptor 集成 → Sprint 30/31/32 ChatSession 集成 (含模式 #5 死锁修复) → Wave 4.5 D1 LLM timeout → Wave 4.6 partial fix → **Wave 4.7 Oracle verdict 真正修复**. 跨 5 个 sprint + 3 个 wave 的 microkernel 蓝图配套基础设施沉淀完成
+
 ### 工程层 (Engineering)
 
 > 工程层模式沉淀在 `tests/AGENTS.md` (测试目录专属) + `src/common/llm/AGENTS.md` (LLM 模块专属).
@@ -397,6 +430,7 @@ HydraForge/
 - **2026-09-12**: fix-skill-interpreter-token-and-timeout (Wave 4 design record only, no code change) archived as `2026-09-12-fix-skill-interpreter-token-and-timeout`. **核心 token 透传已 ship**: commit `10176c5` (forward stop_token through dispatch_llm_generate IPC) + commit `dd97bcb` (early-exit on cancelled token, Oracle bg_e3787930 观察 #1). **剩余 "timeout" 部分** (LLM provider hang 场景无超时防护, 需独立线程 + cv.wait_for + kill_retry) **设计但未实施**: D1 推荐方案 = 独立 worker thread + `cv.wait_for(cap.timeout_ms)` + 超时后 `kill_retry(pid, SIGKILL)`. 实施留 Sprint 33+ 独立 wave (`wave-4.5-skill-interpreter-llm-timeout`). OpenSpec artifacts: 4 files (proposal/design/spec/tasks) + 5 Requirements (2 已 ship ✅ + 3 待实施 ⏳). **设计原则**: 不依赖 LLM provider 自觉检查 stop_token, 通用防护 (misbehaved provider 也适用). 复用 Sprint 28 jthread pattern + RAII + 异常隔离.
 - **2026-09-12**: wave-4.5-skill-interpreter-llm-timeout (Wave 4.5 实施) ship via **D1 worker thread + cv.wait_for + kill_retry**. Wave 4 design record D1 方案实施. commit `43bcbd8` (2 files +148/-25, src/modules/skill_interpreter/skill_interpreter.cpp dispatch_llm_generate 加 D1 机制 + tests/test_skill_interpreter.cpp 加 BlockingLLMProvider mock + Wave-4.5-1 test). 真正修复 misbehaved provider 永久 hang 场景 (不依赖 provider 自觉 stop_token). D1 实现细节: 独立 `std::thread worker` 调 `llm_->generate(gen_req, token)`, 主线程 `cv.wait_for(cap.timeout_ms, [&]{ return done.load(); })` 等结果. 超时后 `kill_retry(this->child_pid_, SIGKILL)` + **`worker.detach()`** 避免 `std::terminate()` (BlockingLLMProvider 设计永远 hang, worker.join() block forever). 共享变量: `std::unique_ptr<Result<GenerationResult, LLMError>> result_ptr` (Result 构造函数 private, 必须 unique_ptr 包装, 不能用 `std::optional<Result<>>`). Known issue: Wave-4.5-1 test 已知 hang 15s (test framework timeout), root cause 不是 D1 实现, 是 IPC loop 的 write 失败处理需优化 (子进程被 kill_retry 后, parent write EPIPE, 但 IPC loop 未 break). Wave 4.6 后续优化 IPC loop write 失败处理 + 验证 first-wins 行为不被 D1 影响. 验证: `test_skill_interpreter` 12/13 PASS (Wave-4.5-1 已知 hang, 其他 12 零回归). Mode 修正建议: Wave 4.6 优化 IPC loop + 考虑 worker.detach() 线程泄漏可接受 trade-off (目标是不让父进程 IPC loop 永久 hang).
 - **2026-09-12**: wave-4.6-ipc-loop-zombie-detection (Wave 4.6 IPC loop 优化, partial fix for Wave-4.5-1 hang) ship via **`waitpid(WNOHANG)` zombie detection + `stop_input_thread_` flag** (`src/modules/skill_interpreter/skill_interpreter.cpp:545-565`). 修复 D1 kill_retry 后 IPC loop hang 15s 问题: read_line 前加 `waitpid(WNOHANG)` 检测 zombie (wret == pid 或 wret == -1 && errno == ECHILD → break IPC loop), 同时 check `stop_input_thread_` 标志 (D1 timeout 分支设 true, IPC loop 下次迭代 break). 双重保险: 既检测 zombie, 也响应 stop flag. **Impl 新增成员** `std::atomic<bool> stop_input_thread_{false}` + `std::condition_variable input_cv_`. commit `f06802f` (1 file +37/-1). 已知问题: Wave-4.5-1 test 仍 hang 15s (waitpid + stop flag 修了主路径, 但 read_line 内部可能 block 在内核 pipe fd 未完全 close 的中间状态), root cause 未找到. Wave 4.7 后续: 改用 pthread_kill 或 SIGCHLD handler 检测 child 死亡 + close(pipe_out_r) + read_line 返回 0 强制 break. 设计原则: D1 IPC 退出路径不依赖 kernel 自动行为 (pipe close, EOF detection), 用 explicit flag + 显式检测.
+- **2026-09-12**: wave-4-7-ipc-loop-hang-fix (Wave 4.7 真正 root cause 修复 via Oracle verdict) ship via **4 项修复**. Oracle session `ses_xx` 审查发现 Wave 4.5 + Wave 4.6 ship 的修复均治不了 Wave-4.5-1 hang 15s, 真正 root cause 是 `worker.join()` 在 `if (!done.load())` 检查**之前**无条件执行 (Wave 4.5 commit `43bcbd8` 引入 bug). close_fd 提案 (Wave 4.7 attempt #1) 基于"member vs local fd"诊断, 但 close_fd 在死代码路径 (timeout 分支因 join 阻塞不可达). Oracle `git show 43bcbd8` 看到 line 836 (旧) `worker.join();` 在 cv.wait_for 之后 + !done 之前无条件执行, 一行定真凶. 4 项修复 (commit `8979b20`, 2 files +125/-26): (1) 删除 line 836 旧 worker.join() (Oracle 关键发现); (2) heap-化 SharedState (消除 detached worker 悬垂引用 UB — lambda 用 [&] 捕获 stack 局部, detach 后 dispatch 返回 → slow-but-finite provider 醒来时写已销毁栈 → 必现 crash); (3) 加 stop_input_thread_ check before write_line (避免 SIGPIPE kill 父进程 — 代码库无 signal(SIGPIPE, SIG_IGN) handler); (4) IPC loop reap 逻辑加 stop_input_thread_ 检查 (D1 SIGKILL → Abort, 自然 SIGKILL 走 Crash). 新增 regression guard Wave-4.7-1 test (tests/test_skill_interpreter.cpp, 67 lines): 验证 result.error_code == Abort (D1 SIGKILL 翻译) + elapsed_ms < 500 (回归守卫 line 836 worker.join() ordering bug). 验证: test_skill_interpreter Wave-4.5-1 PASS 5/5 (baseline hang 15s → <500ms) + Wave-4.7-1 PASS 6/6 (new regression guard); 全量 ctest 224/225 PASS (1 pre-existing Sprint 29 flaky 7.S29-1, AGENTS.md 早记录, 单独跑 6/6 PASS, inherent limitation 非实现 bug). **Oracle 4 项审查应用**: M1 (删除旧 join) + M2 (heap-化 shared state) + M3 (stop flag before write_line) + M4 (Abort/Crash 翻译). 关键调试教训: 1) 复杂 hang 调试先 `git show` 找代码引入点, 不靠推理; 2) 任何 `[&]` 捕获 + `detach()` 模式都是 latent UB; 3) SIGPIPE handler 缺失是常见盲区; 4) AGENTS.md 沉淀渐进式是事实, Wave 4.5 → 4.6 → 4.7 3 步到 Oracle 审查才明确. 模式 #6 真正闭环: Sprint 28 TimerService → Sprint 29/30/31/32 3-consumer 集成 → Wave 4.5/4.6/4.7 D1 LLM timeout 完整链路.
 - **2026-09-08**: Oracle session `ses_f7f5ef175ffeGKhxXLfBJjzLVX` 审查 + `ses_f330bb6ffehvveECRPGKbPF7` 复核, 模式 1/2/4 直接产出.
 - **2026-09-08**: Phase B SIGSEGV 调试 (gdb + 消除实验) 沉淀模式 3 (断言分层) + 异常隔离 §NOTES 扩展.
 - **2026-08-04**: chat-real-llm-coverage ship 沉淀 `helper 三态分离` (模式工程层).
