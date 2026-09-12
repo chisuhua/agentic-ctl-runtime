@@ -21,6 +21,14 @@
 #include <sstream>
 #include <stdexcept>
 #include <sys/stat.h>
+
+// Sprint 31: self-pipe + poll(2) for timer-driven read interrupt (D1/D2/D3)
+// - poll.h: poll(2) 多 fd 监听 (POSIX, Linux/macOS/BSD)
+// - unistd.h: read/write/pipe2/close (POSIX)
+// - fcntl.h: O_CLOEXEC | O_NONBLOCK flags
+#include <poll.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <utility>
 
 #include <core/engine.h>
@@ -230,6 +238,14 @@ public:
     agenticdsl::ITimerService::TimerId periodic_id_ = 0;
     std::atomic<bool> shutdown_check_pending_{false};
 
+    // === Sprint 31 self-pipe + poll (D1/D3) ===
+    // self-pipe trick: timer callback 写 pipe_write_fd_ → 主循环 poll([stdin, pipe_read_fd]) 立即返回
+    // 实现 timer 真正中断 std::getline 阻塞读 (Sprint 30 治标 → Sprint 31 治本)
+    // - pipe_write_fd_ = -1: pipe 创建失败或未启用 input_thread
+    // - pipe_read_fd_ = -1: 同上
+    int pipe_read_fd_ = -1;
+    int pipe_write_fd_ = -1;
+
     Impl(
         agenticdsl::DSLEngine* e,
         std::shared_ptr<agenticdsl::IInteractionBus> b,
@@ -250,19 +266,39 @@ public:
         if (!persist_dir_expanded.empty()) {
             ensure_dir_0700(persist_dir_expanded);
         }
+        // Sprint 31 (D1): 创建 self-pipe for timer-driven read interrupt
+        // - pipe2(O_CLOEXEC | O_NONBLOCK): 不被 exec 子进程继承 + write 不阻塞
+        // - 失败时 fd 保持 -1 (防御性 default, 主循环检查 fd >= 0 后才加入 poll)
         if (session_cfg.enable_input_thread) {
+            int fds[2] = {-1, -1};
+            if (::pipe2(fds, O_CLOEXEC | O_NONBLOCK) == 0) {
+                pipe_read_fd_ = fds[0];
+                pipe_write_fd_ = fds[1];
+            }
             input_thread_ = std::thread([this]() { input_thread_main(); });
         }
     }
 
     ~Impl() {
-        // D8 四步析构顺序 (Sprint 29 复用):
+        // Sprint 31 D4: 五步析构顺序 (Sprint 30 D8 扩展):
         // ① 防御性 cancel periodic timer (idempotent, RAII guard 已 cancel 时 id=0)
         if (periodic_id_ != 0 && timer_) {
             timer_->cancel(periodic_id_);
             periodic_id_ = 0;
         }
+        // ② timer_=nullptr
         timer_ = nullptr;
+        // ③ close pipe_write_fd_ (Sprint 31 新增, ~Impl 体内先于 join 避免 timer
+        //   callback 在 pipe 已关时仍 try write)
+        if (pipe_write_fd_ >= 0) {
+            ::close(pipe_write_fd_);
+            pipe_write_fd_ = -1;
+        }
+        // ④ close pipe_read_fd_ (Sprint 31 新增, 设 -1 防 double-close)
+        if (pipe_read_fd_ >= 0) {
+            ::close(pipe_read_fd_);
+            pipe_read_fd_ = -1;
+        }
 
         stop_input_thread_.store(true);
         // §2.3/§3.4: notify cv so any blocked pop_next_input wakes and returns nullopt
@@ -270,6 +306,7 @@ public:
         if (input_thread_.joinable()) {
             input_thread_.join();
         }
+        // ⑤ no-op child/pipes (ChatSession 无子进程/Sprint 30 保留)
     }
 
 private:
@@ -741,12 +778,24 @@ bool ChatSession::is_input_thread_shutdown() const {
 
 void ChatSession::Impl::input_thread_main() {
     // Sprint 30 (D2 + D5): register periodic timer (50ms) for shutdown responsiveness.
+    // Sprint 31 (D3): timer callback 额外写 self-pipe wake-up byte,让 poll 立即返回
+    // - shutdown_check_pending_ flag: 主循环 acquire-load 检查 (Sprint 30)
+    // - pipe_write: 1 byte write 唤醒 poll (Sprint 31 真正中断 read)
     // D9 fallback: if timer_==nullptr, create per-thread TimerService (D9 lazy).
     // RAII guard cancels timer on all exit paths (EOF break / catch / normal return).
     if (timer_ != nullptr) {
         periodic_id_ = timer_->register_periodic(
             std::chrono::milliseconds(50),
-            [this] { shutdown_check_pending_.store(true, std::memory_order_release); });
+            [this] {
+                shutdown_check_pending_.store(true, std::memory_order_release);
+                // Sprint 31: 写 self-pipe wake-up byte, 让 poll() 立即返回
+                // (EAGAIN 容忍: 1 byte/50ms vs 64KB pipe buffer, 不会满)
+                if (pipe_write_fd_ >= 0) {
+                    char c = 'x';
+                    ssize_t r = ::write(pipe_write_fd_, &c, 1);
+                    (void)r;  // EAGAIN acceptable
+                }
+            });
     }
     struct TimerGuard {
         agenticdsl::ITimerService* timer;
@@ -762,16 +811,61 @@ void ChatSession::Impl::input_thread_main() {
     std::string line;
     while (!stop_input_thread_.load(std::memory_order_acquire)) {
         // Sprint 30 (D3): 周期性 timer callback 已 set shutdown_check_pending_,
-        // 主循环 acquire-load 检查 (no-op in getline 阻塞场景, 但建立 pattern 供
-        // Sprint 31+ chat-session-read-timeout poll/read 管道化使用)
-        (void)shutdown_check_pending_.load(std::memory_order_acquire);
+        // Sprint 31 (D2): poll 多 fd 监听 [STDIN_FILENO, pipe_read_fd_],
+        //   pfds[0] 就绪 → 读 stdin, pfds[1] 就绪 → 读 wake-up byte
+        pollfd pfds[2];
+        int nfds = 0;
+        pfds[nfds].fd = STDIN_FILENO;
+        pfds[nfds].events = POLLIN;
+        ++nfds;
+        if (pipe_read_fd_ >= 0) {
+            pfds[nfds].fd = pipe_read_fd_;
+            pfds[nfds].events = POLLIN;
+            ++nfds;
+        }
 
-        if (!std::getline(std::cin, line)) {
-            // §3.4 NH2 fix: EOF must signal shutdown AND wake any blocked pop_next_input
+        // poll EINTR 重试 + 100ms clamp (Sprint 30 / SkillInterpreter §6.3 §3.3 模式)
+        int n;
+        do {
+            n = ::poll(pfds, nfds, 100);
+        } while (n < 0 && errno == EINTR);
+
+        if (n < 0) {
+            // poll error (非 EINTR): SIGKILL 类似处理, 设 shutdown 让线程退出
             stop_input_thread_.store(true, std::memory_order_release);
             input_cv_.notify_all();
             break;
         }
+
+        // 处理 wake-up byte (Sprint 31 D3): 读 1 byte 清空, 不做业务逻辑
+        if (pipe_read_fd_ >= 0 && (pfds[1].revents & POLLIN)) {
+            char drain[16];
+            ssize_t dr;
+            do {
+                dr = ::read(pipe_read_fd_, drain, sizeof(drain));
+            } while (dr < 0 && errno == EINTR);
+            // 字节累积无业务副作用, 仅清空 buffer
+        }
+
+        // 处理 stdin (Sprint 31 D2): pfds[0] POLLIN → 读一行 (Sprint 30 getline)
+        if (pfds[0].revents & (POLLIN | POLLHUP)) {
+            if (!std::getline(std::cin, line)) {
+                // §3.4 NH2 fix: EOF must signal shutdown AND wake any blocked pop_next_input
+                stop_input_thread_.store(true, std::memory_order_release);
+                input_cv_.notify_all();
+                break;
+            }
+        } else {
+            // poll wake-up 但 stdin 不可读 (只有 wake-up byte)
+            // 检查 shutdown_check_pending_ 决定是否退出
+            if (shutdown_check_pending_.load(std::memory_order_acquire)) {
+                // Sprint 30: timer 周期性 fire 已 set flag
+                // 注意: 此处不直接 break, 让业务循环自然 continue 到下次迭代
+                // (避免 timer 周期 fire 立即退出, 假设业务还有 stdin 输入未处理)
+            }
+            continue;
+        }
+
         if (line.empty()) continue;
 
         if (line.front() == '/') {
