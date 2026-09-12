@@ -688,6 +688,46 @@ TimerService 真正实现了"timer 守护 stdin 读" — 不再是定期检查�
 
 ---
 
+## §Sprint 32 收官注记 (2026-09-12, chat-session.h refactor SHIPPED, commit 7bd94ad / merge 9386ab7)
+
+**战略定位**: Sprint 32 = 根除 Sprint 30 PIMPL `void* timer_handle` workaround, 恢复 `agenticdsl::ITimerService*` 直接类型. Sprint 30 ship 时选 PIMPL workaround 是 namespace pollution 的**临时绕行** (牺牲类型安全换编译通过), Sprint 32 根除 workaround 恢复类型安全.
+
+**关键发现 (本 Sprint 核心价值)**: commands/*.cpp (`command_globals.cpp` / `model_command.cpp` / `cancel_command.cpp`) 实际**已在 GLOBAL scope include** `chat_session.h` (在 `namespace pdk_chat_demo {` 之前), 验证 Sprint 30 调试时 LSP stale cache 误判 forward decl block 嵌套 — **实际编译器正常工作, PIMPL workaround 不必要**.
+
+**1 commit ship** (push to main `3021bde..9386ab7`):
+| # | Commit | 类别 | 内容 | 影响范围 |
+|---|--------|:---:|------|---------|
+| 1 | **`7bd94ad`** | refactor(chat_session) | 移除 forward decl block + 改 `#include <core/engine.h> + <agenticdsl/contract/itool_registry.h> + <agenticdsl/contract/iinteraction_bus.h> + <agenticdsl/contract/timer_service.h>` + 7th ctor param `agenticdsl::ITimerService*` 直接类型 + Impl ctor 移除 `static_cast` + test 7.C30-1/7.C31-1 移除 `static_cast<void*>` | `examples/pdk_chat_demo/chat_session.h` (+7 改 -25, 移除 forward decl block + 7 lines includes) + `chat_session.cpp` (+15 改 -0, Impl ctor 改直接类型) + `test_chat_session.cpp` (+9 改 -0, 7.C30-1/7.C31-1 改直接类型) |
+| 2 | `9386ab7` | merge | merge commit to main + push origin | main ahead by 1 |
+
+**验证结果**:
+- `test_chat_session` → ✅ **11/11 PASS (33 assertions, 零回归)**
+- Sprint 30 PIMPL workaround 已消除, 公开 API 1 字段变化: `void*` → `agenticdsl::ITimerService*` (类型安全恢复, 无需 `static_cast`)
+- `tools/adr_lint.py` → ✅ 0 errors
+- `tools/docs_drift_audit.py` → ✅ 0 DRIFT
+- 7.C30-1 + 7.C31-1 (Sprint 30 + 31 ship 的 tests) 零修改, 行为完全保持
+
+**关键调试教训** (Sprint 32 沉淀, 与 Sprint 30 case study 互补):
+1. **LSP stale cache 误判**: Sprint 30 调试时 LSP 报 `pdk_chat_demo::agenticdsl::DSLEngine` 不存在, **但实际编译器在 commands/*.cpp (GLOBAL scope include) 正常工作**. 真实编译未失败, 是 LSP 缓存问题. **应先验证实际编译再决定 workaround**
+2. **PIMPL void* 是 namespace workaround, 不是设计**: 牺牲类型安全, 测试需 `static_cast<void*>(&fake_timer)`. Sprint 32 直接改 include 完整 header 恢复类型安全
+3. **forward decl block 嵌套是 inherent fragile, 但并非所有 files 都受影响**: 只有在 `namespace pdk_chat_demo` 内 include 的 files 才会嵌套. commands/*.cpp 实际在 GLOBAL scope include, 不受影响. Sprint 30 调试时未验证此点, 直接选 PIMPL workaround 是 over-engineering
+4. **AGENTS.md 模式沉淀是渐进式**: Sprint 28 (TimerService ship) → Sprint 29 (SkillInterceptor 集成) → Sprint 30 (ChatSession PIMPL workaround) → Sprint 31 (self-pipe 真实死锁修复) → **Sprint 32 (类型安全根除)**. 每步都在前一基础上改进, 最终方案往往在前几步调试后才明确
+
+**🎯 模式 #6 + 类型安全 双闭环完成**:
+| Sprint | 里程碑 | 状态 |
+|--------|--------|------|
+| Sprint 28 | TimerService 抽象 (kernel-timer-service) | ✅ ship |
+| Sprint 29 | SkillInterceptor deadline 集成 (模式 #6 第 2 个消费者, fork+exec 场景) | ✅ ship |
+| Sprint 30 | ChatSession periodic timer (模式 #6 第 3 个消费者, std::thread 场景) | ✅ ship |
+| Sprint 31 | ChatSession self-pipe + poll (真实死锁修复) | ✅ ship |
+| **Sprint 32** | **chat_session.h 重构 (类型安全根除)** | ✅ **ship** |
+
+TimerService contract 层抽象在 3 种线程模型 (PDK plugin / fork+exec / std::thread) 下全部验证健壮 + 公开 API 类型安全恢复, PIMPL workaround 已被根除.
+
+**后续 follow-ups** (Sprint 32 解锁):
+- Wave 4 `fix-skill-interpreter-token-and-timeout` (Sprint 29 解锁) — `std::stop_token` 透传到 `dispatch_llm_generate` (skill_interpreter.cpp:659)
+- microkernel 蓝图后续组件 (PipeBus / UserAgentLoader / procfs 等) 等 TimerService 沉淀充分后启动, 不立即新建 ADR
+
 ## 七、存档说明
 
 > 以下历史看板已归档: 它们的 Phase 0-4 追踪已由 `docs/active-status.md` 替代。
