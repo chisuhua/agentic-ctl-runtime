@@ -344,6 +344,12 @@ class SkillInterpreter::Impl {
   ITimerService::TimerId deadline_timer_id_ = 0;
   std::atomic<bool> deadline_exceeded_{false};
 
+  // === Wave 4.6: IPC loop 退出信号 (LLM timeout 触发) ===
+  // stop_input_thread_: D1 timeout 时设 true, IPC loop 下次迭代 break (避免 write_line 阻塞)
+  // input_cv_: notify 通知其他 wait 的线程
+  std::atomic<bool> stop_input_thread_{false};
+  std::condition_variable input_cv_;
+
   void close_fd(int& fd) {
     if (fd >= 0) {
       close(fd);
@@ -538,6 +544,18 @@ class SkillInterpreter::Impl {
 
       // 处理 pipe_out（子进程 IPC 请求）
       if (fds[0].revents & POLLIN) {
+        // Wave 4.6 fix: D1 timeout 杀掉 child 后 child 是 zombie, 但 read_line 可能 block
+        // (kernel pipe fd 未完全 close). 先 waitpid(WNOHANG) 检测 zombie → 直接 break
+        // 避免在 read_line 上 hang. 同时处理 stop_input_thread_ 标志
+        int wstatus = 0;
+        pid_t wret = waitpid(pid, &wstatus, WNOHANG);
+        if (wret == pid || (wret == -1 && errno == ECHILD)) {
+          // child 是 zombie 或已被 reap → IPC loop 结束
+          break;
+        }
+        if (stop_input_thread_.load(std::memory_order_acquire)) {
+          break;
+        }
         auto rl = read_line(pipe_out_r, read_buf_in);
         if (rl.truncated) {
           // IPC 消息超 1MB → SIGKILL
@@ -583,6 +601,17 @@ class SkillInterpreter::Impl {
         IPCResponse resp = dispatch(req, cap, pid, token);
         if (!write_line(pipe_in_w, serialize(resp))) {
           // 写失败 → 子进程 pipe 已关闭
+          // Wave 4.6 fix: 若 child 被 kill_retry (e.g. D1 timeout) 后 parent write
+          // 可能不立即 fail (kernel 未完全关闭 pipe), 此时 check waitpid(WNOHANG)
+          // 确认 child 已 zombie → break. 比等 POLLHUP 触发更主动.
+          int wstatus = 0;
+          pid_t wret = waitpid(pid, &wstatus, WNOHANG);
+          if (wret == pid || (wret == -1 && errno == ECHILD)) {
+            // child 是 zombie 或已被 reap → IPC loop 结束
+            break;
+          }
+          // child 还没死 (write 失败但 child 还在 process 退出中),
+          // 下一轮 poll() 应该检测到 POLLHUP, 但保险起见也 break 避免 hang
           break;
         }
 
@@ -805,8 +834,15 @@ class SkillInterpreter::Impl {
       // ⚠️ worker.detach() 关键: BlockingLLMProvider 永远 hang (设计如此模拟 misbehaved
       // provider), worker.join() 会 block forever → std::thread dtor 触发 std::terminate()
       // → 进程崩溃. detach 让 worker 继续后台运行 (线程泄漏可接受, 目标是不让
-      // 父进程 IPC loop 永久 hang). worker 会在进程退出时被回收.
+      // 父进程IPC loop 永久 hang). worker 会在进程退出时被回收.
       worker.detach();
+      // Wave 4.6 修复: 设 stop_input_thread_=true, IPC loop 下次迭代 break (避免 write_line
+      // 阻塞 — kernel 刚 kill 子进程后, parent write 到子进程 pipe 可能不立即 EPIPE
+      // 而是 block 直到子进程 pipe fd 被完全关闭. stop_input_thread_=true 让 IPC loop
+      // 下次循环 check 时直接 break, 避免在 write_line 上 hang)
+      this->stop_input_thread_.store(true, std::memory_order_release);
+      // Also notify input_cv_ in case parent thread is waiting on it
+      this->input_cv_.notify_all();
       return IPCResponse{false, nullptr, "llm_generate timeout"};
     }
     worker.join();  // 正常路径: worker 已 done, join 立即返回
