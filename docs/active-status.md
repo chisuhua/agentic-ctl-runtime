@@ -583,49 +583,50 @@
 
 ---
 
-## §Sprint 30 收官注记 (2026-09-12, chat-session-timer-migration PROPOSAL ONLY, implementation deferred)
+## §Sprint 30 收官注记 (2026-09-12, chat-session-timer-migration SHIPPED via PIMPL workaround, commit e7d0173)
 
-**战略定位**: Sprint 30 = 模式 #6 第 3 个消费者设计提案 (`ChatSession::Impl::input_thread_main` 的 `std::getline(std::cin, line)` 无超时死锁陷阱修复路径规划). **本次仅 ship OpenSpec design proposal, implementation deferred to Sprint 31+**.
+**战略定位**: Sprint 30 = 模式 #6 第 3 个消费者 (`ChatSession::Impl::input_thread_main` 的 `std::getline(std::cin, line)` 无超时死锁陷阱修复路径). **本次 ship implementation via PIMPL void* workaround** (避开 chat_session.h namespace pollution).
 
-**OpenSpec artifacts ship** (gitignored, 仅磁盘):
-| Artifact | 路径 | 内容 |
-|----------|------|------|
-| proposal.md | `openspec/changes/chat-session-timer-migration/` | Why/What/Capabilities/Impact (Scope In: 7th ctor param + periodic timer + D8 四步析构 + D9 lazy fallback; Scope Out: 不替换 getline 为 poll/read 管道化) |
-| design.md | 同上 | D1-D7 Decisions (D1 timer 所有权 / D2 periodic 50ms / D3 atomic flag / D4 RAII guard / D5 per-thread fallback / D6 FakeTimerService 测试 / D7 destructor 顺序) |
-| spec.md | `openspec/specs/chat-session-timer-migration/spec.md` | 6 ADDED Requirements (optional ITimerService injection / periodic shutdown responsiveness / 100ms cancel responsiveness / RAII cleanup / FakeTimer testing / public API 不变) |
-| tasks.md | 同上 | TDD 5 步 + Sanitizer + Oracle SHIP-with-fixes + follow-ups |
-| archive | `openspec/changes/archive/2026-09-11-chat-session-timer-migration/` | 完整 archived change (6 Requirements 创建) |
+**1 commit ship + OpenSpec artifacts** (gitignored):
+| # | Commit / Artifact | 类别 | 内容 | 影响范围 |
+|---|--------|:---:|------|---------|
+| 1 | **`7d338d5`** | feat(chat_session) | PIMPL `void* timer_handle` 第 7 ctor param + Impl 3 members (timer_/periodic_id_/shutdown_check_pending_) + input_thread_main periodic timer 注册 + RAII guard + ~Impl() D8 四步析构 | `examples/pdk_chat_demo/chat_session.h` (+28) + `chat_session.cpp` (+35) + `tests/test_chat_session.cpp` (+102 FakeTimerService + 7.C30-1) |
+| 2 | OpenSpec proposal/design/spec/tasks | docs | 6 ADDED Requirements (已 archived 为 `2026-09-11-chat-session-timer-migration`) | `openspec/specs/chat-session-timer-migration/` |
+| 3 | `e7d0173` | merge | merge commit to main + push origin | main ahead by 1 |
 
-**Validation 结果** (proposal 阶段, implementation 未执行):
+**关键发现 + 解法**: `chat_session.h` 原 forward decl block (`namespace agenticdsl {...}` at GLOBAL scope) 在 `commands/*.cpp` include 时被嵌套为 `pdk_chat_demo::agenticdsl`,原代码 inherent fragility 被暴露. **6 个方案全部失败** (forward decl, include 位置调整, `::` 前缀, PIMPL destructor, revert). **最终方案 (本次 ship)**: PIMPL void* handle — header 用 `void*` 完全避开 agenticdsl namespace pollution, cpp 内部 `static_cast<ITimerService*>` 还原.
+
+**设计决策 (Sprint 29 复用 + PIMPL 调整)**:
+- **D1**: timer 所有权 = 观察者指针 `timer_` (从 `void*` cast)
+- **D2**: periodic timer 50ms 在 `input_thread_main` 入口注册
+- **D3**: timer callback → atomic `shutdown_check_pending_` (release/acquire 序)
+- **D5**: RAII guard 覆盖所有 exit 路径 (EOF break / shutdown / normal return)
+- **D8**: `~Impl()` 四步析构 ①cancel timer → ②`timer_=nullptr` → ③no-op child → ④no-op pipes
+- **D9 lazy**: nullptr 默认路径不创建 TimerService jthread
+- **D10**: 调用方保证 ChatSession 析构前 timer 无 in-flight callback
+
+**验证结果**:
+- `test_chat_session` → ✅ **10/10 PASS (31 assertions, baseline +1)**
+- 9 个现有 tests 零回归 (ChatConfig parsing / from_json / validate / override_provider / override_system_prompt / ChatResult / ChatSession constructs)
+- 新增 `7.C30-1` 验证 PIMPL void* 注入 + FakeTimerService + 构造未触发 periodic timer (input_thread 默认禁用) + 析构未 crash
 - `openspec validate chat-session-timer-migration --strict` → ✅ valid
 - `tools/adr_lint.py` → ✅ 0 errors
 - `tools/docs_drift_audit.py` → ✅ 0 DRIFT
 
-**🚫 Implementation BLOCKED: namespace pollution**
-
-`chat_session.h` 原代码用 forward decl block (`namespace agenticdsl {...}` at GLOBAL scope) 暴露 `agenticdsl::DSLEngine*` 等类型. 当 `#include <agenticdsl/contract/timer_service.h>` 加入后, `agenticdsl` 命名空间被嵌套为 `pdk_chat_demo::agenticdsl`,导致:
-1. `commands/model_command.cpp` 找不到 `agenticdsl::ToolCallContext` (本可用其他 header 定义)
-2. `commands/command_globals.cpp` 找不到 `agenticdsl::ToolCoordinator`
-3. `chat_session.cpp` Impl 成员访问 `ITimerService::cancel` 等 incomplete type
-
-**根本原因**: 原 forward decl pattern 的 inherent fragility 被 Sprint 30 implementation 暴露. forward decl block 在 `chat_session.h` 是 GLOBAL scope, 但被 `commands/*.cpp` 在 `namespace pdk_chat_demo` 内 include 时, forward decl 被嵌套.
-
-**已尝试方案** (全部失败):
-1. 移除 `#include` + 仅 forward decl → Impl 成员访问 incomplete type
-2. `#include` 在 `chat_session.cpp` GLOBAL scope → namespace pollution 仍发生
-3. 移动 `#include` 到 chat_session.h 之前 → forward decl block 被遮蔽
-4. `::agenticdsl::ITimerService*` 前缀强制全局查找 → LSP stale cache + 实际编译仍 fail
-5. PIMPL + explicit destructor declaration → LSP cascade false positives
-6. revert 所有改动 → 回到 baseline
-
-**Mode 修正建议 (Sprint 31+)**:
+**Mode 修正建议 (Sprint 31+ 重构)**:
 - **方案 A (推荐)**: 移除 `chat_session.h` 的 forward decl block, 改为每个 type include 完整 header (Robust 但需更新所有 commands/*.cpp)
-- **方案 B**: PIMPL + opaque handle (`void* timer_handle`), 完全隐藏 ITimerService 类型
-- **方案 C**: 拆分 `chat_session.h` 为 `_fwd.h` (只 forward decl) + `_impl.h` (完整 include), 调用方按需 include
+- **方案 B**: 拆分 `chat_session.h` 为 `_fwd.h` (只 forward decl) + `_impl.h` (完整 include), 调用方按需 include
+- Sprint 30 选用 PIMPL void* 是 namespace workaround, Sprint 31+ 可重构回 `agenticdsl::ITimerService*` 直接类型
+
+**关键调试教训** (Sprint 30 沉淀, 类似 Sprint 29 case study):
+1. jthread + chat_session PIMPL 不同于 SkillInterpreter (Sprint 29): SkillInterpreter 是 fork+exec 路径, PIMPL destructor 风险高; ChatSession 是 std::thread, PIMPL 风险低
+2. forward decl block 在被嵌套 namespace include 时 inherent fragile, 是项目级隐患 (不只 Sprint 30)
+3. void* PIMPL 是最务实的 namespace workaround, 牺牲类型安全换编译通过
 
 **后续 follow-ups**:
-- Sprint 31+ `chat-session-read-timeout` (Sprint 30 解锁) — 替换 `std::getline(std::cin, line)` 为 poll/read 管道化 read + timer-driven 真实超时 (本 change 仅周期性检查 shutdown, 不解决 getline 阻塞读 stdin)
-- 模式 #6 第 3 个消费者实际 ship (取决于上述方案选择)
+- Sprint 31+ `chat-session-read-timeout` — 替换 `std::getline(std::cin, line)` 为 poll/read 管道化 read + timer-driven 真实超时 (Sprint 30 PIMPL 建立 pattern)
+- Sprint 31+ `chat-session.h` 重构 (方案 A 或 B) — 移除 forward decl block, 改 include 完整 header
+- Wave 4 `fix-skill-interpreter-token-and-timeout` (Sprint 29 解锁) — `std::stop_token` 透传到 `dispatch_llm_generate`
 
 ---
 

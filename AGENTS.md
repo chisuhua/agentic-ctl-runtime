@@ -273,6 +273,30 @@ HydraForge/
 - 教训: **jthread 创建在 ctor 是 micro-anti-pattern** (影响 fork timing, 跨进程场景必踩) + **timer registration 必须在首个 loop-top check 之后** (否则 cancel 检测被推迟) + **FakeTimer 测试用 IPC call 数量保 child 存活** (MockToolRegistry 同步返回下 child 可在 <1ms 完成)
 - **Mode 修正建议 (Sprint 30+)**: D9 lazy TimerService 改为 "per-run at first ipc_loop_and_wait()", 既避免 jthread 影响 ctor timing, 又保证 timer 在首个 loop-top check 之后注册
 
+**2026-09-12 case study (chat-session-timer-migration Sprint 30)**:
+- **模式 #6 闭环**: 第 3 个真实消费者 `ChatSession::Impl::input_thread_main` (chat_session.cpp:742+) 原本以 `std::getline(std::cin, line)` 无超时阻塞读 stdin (AGENTS.md §模式 #5 TTY 死锁陷阱识别). 迁移目标: 让 TimerService 周期性唤醒 input_thread 检查 shutdown,建立 Sprint 31+ poll/read 管道化的 pattern foundation
+- **🚨 关键 namespace pollution 发现**: `chat_session.h` 原 forward decl block (`namespace agenticdsl {...}` at GLOBAL scope) 暴露 `agenticdsl::DSLEngine*` 等类型, **但被 `commands/*.cpp` 在 `namespace pdk_chat_demo` 内 include 时, forward decl 被嵌套为 `pdk_chat_demo::agenticdsl`**, 导致 `commands/model_command.cpp` 找不到 `agenticdsl::ToolCallContext` 等. **这是项目级 inherent fragility, Sprint 30 implementation 暴露而非引入**
+- **6 个修复方案全部失败** (根因是 forward decl block 嵌套):
+  1. 移除 `#include` + 仅 forward decl → Impl 成员访问 incomplete type
+  2. `#include` 在 `chat_session.cpp` GLOBAL scope → namespace pollution 仍发生
+  3. 移动 `#include` 到 chat_session.h 之前 → forward decl block 被遮蔽
+  4. `::agenticdsl::ITimerService*` 前缀强制全局查找 → LSP stale cache + 实际编译仍 fail
+  5. PIMPL + explicit destructor declaration → LSP cascade false positives
+  6. revert 所有改动 → 回到 baseline
+- **✅ 最终 ship 方案**: **PIMPL `void* timer_handle`** — header 用 `void*` 完全避开 agenticdsl namespace pollution (void* 在 std namespace, 无嵌套风险), cpp 内部 `static_cast<ITimerService*>` 还原. 牺牲类型安全换编译通过, 调用方负责 cast 正确性
+- **实装**: commit `7d338d5` (3 files +166/-5, chat_session.h 7th ctor param + chat_session.cpp Impl members + input_thread_main periodic timer + RAII guard + D8 dtor + tests/test_chat_session.cpp FakeTimerService helper + 7.C30-1)
+- **验证**: `test_chat_session` 10/10 PASS (31 assertions, baseline +1), 9 个现有 tests 零回归
+- **关键调试教训** (Sprint 30 沉淀):
+  1. **jthread + chat_session PIMPL 不同于 SkillInterpreter** (Sprint 29): SkillInterpreter 是 fork+exec 路径, PIMPL destructor 风险高; ChatSession 是 std::thread, PIMPL 风险低 — **impl 选择取决于线程模型**
+  2. **forward decl block 在被嵌套 namespace include 时 inherent fragile** (项目级隐患, 不只 Sprint 30) — Sprint 31+ 必须重构移除 chat_session.h forward decl block
+  3. **void* PIMPL 是最务实的 namespace workaround**, 牺牲类型安全换编译通过, 适用于 PIMPL 模式可接受的场景
+  4. **getline 阻塞场景的 timer 仅周期性检查 flag**, 实际无法唤醒 getline (Sprint 31+ 需 poll/read 管道化才能真正解决 TTY 死锁)
+- **Mode 修正建议 (Sprint 31+)**:
+  - **方案 A (推荐)**: 移除 `chat_session.h` 的 forward decl block, 改为每个 type include 完整 header (Robust 但需更新所有 commands/*.cpp)
+  - **方案 B**: 拆分 `chat_session.h` 为 `_fwd.h` + `_impl.h`, 调用方按需 include
+  - Sprint 30 PIMPL void* 是 namespace workaround, Sprint 31+ 可重构回 `agenticdsl::ITimerService*` 直接类型
+- **🎯 模式 #6 3-consumer 闭环完成**: WorkflowCallbackChannel (Sprint 28) + SkillInterpreter (Sprint 29) + ChatSession (Sprint 30) 三个 timer 使用方全部 ship, TimerService contract 层抽象在跨 PDK plugin / 跨进程 fork+exec / 跨 std::thread 三种线程模型下全部验证健壮
+
 ### 治理层 (Governance)
 
 #### 5. 跨多树相同测试目标的 helper 双维护策略
@@ -295,6 +319,7 @@ HydraForge/
 
 - **2026-09-12**: kernel-timer-service (Sprint 28 microkernel 第 1 件) ship + temporal_agent 迁移, Oracle session `ses_f6fe76438ffeM5q8z2tUXQ7lIQ` 后续建议直接产出模式 6 (Contract-layer utility tool pattern: 抽 contract 层接口 + factory 函数 + 实现放 src/common/utils/ + periodic 累积 deadline 语义 + 异常隔离 + RAII unique_ptr 所有权). commit `188bd8c` (TimerService 实现) + `bc8d751` (temporal_agent 迁移 + agenticdsl_common PIC fix). KI-1: Catch2 v3.7.0 + std::jthread reporter bug 标 ship-with-known-issue.
 - **2026-09-12**: skill-interpreter-timer-migration (Sprint 29, 模式 #6 第 2 个消费者) ship, Oracle session `ses_f6f25fd0bffeX5P4rs1hvHOYXQ` 审查 + 11 个设计决策 D1-D11 全部 resolve (核心收敛 D8 析构顺序 + D11 first-wins 不变量). 关键调试教训: TimerService jthread 创建在 Impl ctor 影响 fork+exec timing 导致 baseline 7.8b/7.8c 回归 → D9 从 eager 改为 lazy (nullptr 路径不创建 TimerService). commit `03b57ac` (3 files +354/-7). 已知问题: 7.S29-1 system load 下 flaky (MockToolRegistry 同步返回, inherent limitation 非实现 bug). Mode 修正建议 (Sprint 30+): D9 lazy TimerService 改为 "per-run at first ipc_loop_and_wait()".
+- **2026-09-12**: chat-session-timer-migration (Sprint 30, 模式 #6 第 3 个消费者 + 闭环) ship via PIMPL `void* timer_handle` workaround. **关键发现**: `chat_session.h` 原 forward decl block 在 `commands/*.cpp` include 时被嵌套为 `pdk_chat_demo::agenticdsl` (项目级 inherent fragility, 不只 Sprint 30). 6 个修复方案全部失败 (forward decl, include 位置, `::` 前缀, PIMPL destructor, revert) → 最终用 PIMPL `void*` 完全避开 namespace pollution. commit `7d338d5` (3 files +166/-5, chat_session.h 7th ctor param + chat_session.cpp Impl members + input_thread_main periodic timer + RAII guard + D8 dtor + test 7.C30-1). 验证: `test_chat_session` 10/10 PASS (31 assertions, baseline +1), 9 个现有 tests 零回归. 模式 #6 3-consumer 闭环完成: WorkflowCallbackChannel (Sprint 28) + SkillInterpreter (Sprint 29) + ChatSession (Sprint 30). Mode 修正建议 (Sprint 31+): 移除 chat_session.h forward decl block, 改 include 完整 header (方案 A) 或拆分 _fwd.h + _impl.h (方案 B), 可重构回 `agenticdsl::ITimerService*` 直接类型.
 - **2026-09-08**: Oracle session `ses_f7f5ef175ffeGKhxXLfBJjzLVX` 审查 + `ses_f330bb6ffehvveECRPGKbPF7` 复核, 模式 1/2/4 直接产出.
 - **2026-09-08**: Phase B SIGSEGV 调试 (gdb + 消除实验) 沉淀模式 3 (断言分层) + 异常隔离 §NOTES 扩展.
 - **2026-08-04**: chat-real-llm-coverage ship 沉淀 `helper 三态分离` (模式工程层).
