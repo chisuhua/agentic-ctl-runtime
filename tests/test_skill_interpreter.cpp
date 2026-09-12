@@ -345,18 +345,54 @@ TEST_CASE("7.8b pre-cancelled stop_token triggers immediate SIGKILL",
 //          → last_token_stop_possible == false → 测试拦截.
 namespace {
 class RecordingLLMProvider : public ILLMProvider {
+  public:
+   std::string last_model;
+   int generate_calls = 0;
+   bool last_token_stop_possible = false;
+   GenerationResult result;
+
+   Result<GenerationResult, LLMError> generate(
+       const GenerationRequest& req, std::stop_token token) override {
+     last_model = req.params.model;
+     last_token_stop_possible = token.stop_possible();
+     ++generate_calls;
+     return Result<GenerationResult, LLMError>::success(result);
+   }
+
+   std::unique_ptr<IGenerationStream> generate_stream(
+       const GenerationRequest&, std::stop_token) override {
+     return nullptr;
+   }
+
+   std::vector<ModelInfo> available_models() const override { return {}; }
+};
+
+// === Wave 4.5: BlockingLLMProvider (mock for D1 timeout test) ===
+// 模拟 misbehaved provider: generate() 永远 hang, 不响应 stop_token
+// 用于验证 D1 worker thread + cv.wait_for + kill_retry 真正修复永久 hang 场景
+class BlockingLLMProvider : public ILLMProvider {
  public:
-  std::string last_model;
   int generate_calls = 0;
-  bool last_token_stop_possible = false;
-  GenerationResult result;
+  std::atomic<bool> entered{false};  // 记录是否进入 generate (供测试验证)
+  std::atomic<bool> token_observed_cancelled{false};  // 记录 stop_token 是否被观察
 
   Result<GenerationResult, LLMError> generate(
       const GenerationRequest& req, std::stop_token token) override {
-    last_model = req.params.model;
-    last_token_stop_possible = token.stop_possible();
     ++generate_calls;
-    return Result<GenerationResult, LLMError>::success(result);
+    entered.store(true);
+    // 模拟 misbehaved provider: 不响应 stop_token, 永远 hang
+    // 测试期望: D1 worker thread + cv.wait_for + kill_retry 真正修复,
+    //   父进程不等此函数返回, 而是在 cv.wait_for 超时后 kill_retry(pid, SIGKILL)
+    //   + worker.join() 立即完成 (子进程已死, 此函数所在 stack 被回收)
+    //   返回 timeout error 而非永远 hang
+    while (true) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      if (token.stop_requested()) {
+        token_observed_cancelled.store(true);
+        // 即使观察 stop_token 也不主动返回, 模拟 misbehaved provider
+        // (真正场景下, D1 timeout 后 kill_retry 会让此 while 循环所属 stack 被回收)
+      }
+    }
   }
 
   std::unique_ptr<IGenerationStream> generate_stream(
@@ -1022,6 +1058,54 @@ TEST_CASE("7.S29-3 first-wins invariant between timer and token",
   } else {
     CHECK(is_timeout);  // exactly-one: if not abort, must be timeout
   }
+
+  cleanup_file(skill);
+}
+// === Wave 4.5: LLM call timeout triggers kill_retry (D1 实施) ===
+// 回归守卫: 未来回退 dispatch_llm_generate 中 worker thread + cv.wait_for + kill_retry,
+// LLM provider hang 场景下 dispatch_llm_generate 永远不返回 → 测试 hang 直至 framework timeout
+TEST_CASE("Wave-4.5-1 LLM call timeout triggers kill_retry",
+          "[skill_interpreter][llm-timeout][wave-4.5][D1]") {
+  MockToolRegistry tools;
+  test::MockBus bus;
+  // BlockingLLMProvider 模拟 misbehaved provider: generate() 永远 hang, 不响应 stop_token
+  auto blocking = std::make_unique<BlockingLLMProvider>();
+  auto* raw = blocking.get();
+  SkillInterpreter interpreter(tools, bus, raw, nullptr);
+
+  std::string skill = create_temp_skill(
+      "---\n"
+      "name: llm-timeout-test\n"
+      "version: 0.1\n"
+      "description: test D1 LLM call timeout\n"
+      "---\n"
+      "llm_generate({\"prompt\": \"hang\"})\n");
+  REQUIRE(!skill.empty());
+
+  SkillCapability cap;
+  cap.allow_llm = true;
+  cap.max_steps = 10;
+  // 设 200ms timeout, BlockingLLMProvider 永远 hang → 期望 cv.wait_for 超时 + kill_retry
+  cap.timeout_ms = Ms(200);
+
+  // 核心契约: dispatch_llm_generate 应在 ~200ms 内返回 timeout error
+  // (而非永远 hang 等 BlockingLLMProvider 返回)
+  auto start = std::chrono::steady_clock::now();
+  auto result = interpreter.run(skill, cap, std::stop_token{});
+  auto elapsed_ms = std::chrono::duration_cast<Ms>(
+      std::chrono::steady_clock::now() - start).count();
+
+  // 验证: BlockingLLMProvider generate 被调用过 (worker thread 真的进了 generate)
+  REQUIRE(raw->generate_calls == 1);
+  REQUIRE(raw->entered.load() == true);
+
+  // 验证: result.error_code == Abort (D1 超时后 kill_retry → SIGKILL → Abort)
+  // (与 7.8c / 7.S29-2 / 7.S29-3 的 first-wins 机制一致: D1 是 Abort 触发, Timeout 是
+  //  子进程自然超时不同, D1 主动 kill 走 Abort 路径)
+  CHECK(result.error_code == ErrorCode::Abort);
+
+  // 验证: elapsed < 2 秒 (D1 在 200ms 超时后立即返回, 总耗时 < timeout + overhead)
+  CHECK(elapsed_ms < 2000);
 
   cleanup_file(skill);
 }
