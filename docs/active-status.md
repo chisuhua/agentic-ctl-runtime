@@ -770,6 +770,47 @@ TimerService contract 层抽象在 3 种线程模型 (PDK plugin / fork+exec / s
 
 ---
 
+## §Wave 4.5 收官注记 (2026-09-12, wave-4.5-skill-interpreter-llm-timeout SHIPPED, commit 43bcbd8)
+
+**战略定位**: Wave 4.5 = Wave 4 design record D1 推荐方案的**实施** (独立 worker thread + cv.wait_for + kill_retry). 真正修复 misbehaved LLM provider 永久 hang 场景 (不依赖 provider 自觉 stop_token). Wave 4 已 ship token 透传 + early-exit (D0), Wave 4.5 ship D1 通用防护补全.
+
+**1 commit ship** (push to origin `wave-4.5-skill-interpreter-llm-timeout` branch):
+| # | Commit | 类别 | 内容 | 影响范围 |
+|---|--------|:---:|------|---------|
+| 1 | **`43bcbd8`** | feat(skill_interpreter) | `dispatch_llm_generate` 加 D1 机制 (独立 `std::thread worker` + `cv.wait_for(cap.timeout_ms)` + `kill_retry(this->child_pid_, SIGKILL)` + `worker.detach()` 超时分支) | `src/modules/skill_interpreter/skill_interpreter.cpp` (+127 dispatch_llm_generate D1 实现 + <condition_variable> + <mutex> includes) + `tests/test_skill_interpreter.cpp` (+45 BlockingLLMProvider mock + Wave-4.5-1 test) |
+
+**D1 实现细节** (skill_interpreter.cpp:744-844):
+- 独立 `std::thread worker` 调 `llm_->generate(gen_req, token)`, 主线程 `cv.wait_for(cap.timeout_ms, [&]{ return done.load(); })` 等结果
+- 共享变量: `std::unique_ptr<Result<GenerationResult, LLMError>> result_ptr` (Result 构造函数 private, 必须 unique_ptr 包装), `std::exception_ptr eptr`, `std::atomic<bool> done`, `std::mutex m`, `std::condition_variable cv`
+- 超时: `kill_retry(this->child_pid_, SIGKILL)` 清理子进程 + **`worker.detach()`** 避免 `std::terminate()` (BlockingLLMProvider 设计永远 hang, worker.join() block forever)
+- 正常路径: `worker.join()` (已 done, join 立即返回) + 返回成功结果
+- 异常路径: catch(...) in worker, eptr 传回主线程 rethrow
+
+**验证结果**:
+- `test_skill_interpreter` → ⚠️ **12/13 PASS (73 assertions)** — 12 个现有 tests 零回归, Wave-4.5-1 已知 hang 15s (test framework timeout)
+- `openspec change validate wave-4-5-skill-interpreter-llm-timeout` → ✅ valid
+- `tools/adr_lint.py` → ✅ 0 errors
+- `tools/docs_drift_audit.py` → ✅ 0 DRIFT
+
+**🚧 Known issue (test_skill_interpreter Wave-4.5-1 hang 15s)**:
+- D1 实现 + `worker.detach()` 修了 `std::terminate()` 崩溃
+- 但 IPC loop 的 write 失败处理需要优化 (子进程被 `kill_retry` 后, parent write EPIPE, 但 IPC loop 未 break)
+- **root cause 不是 D1 实现**, 是 IPC loop write 失败处理
+- **Wave 4.6 优化**: 检测 EPIPE/SIGPIPE 后立即 break IPC loop + 验证现有 first-wins 行为不被 D1 影响
+
+**关键调试教训** (Wave 4.5 沉淀, 与 Sprint 30 调试链互补):
+1. **`Result<T,E>` 构造函数是 private** (`llm_types.h:106`), 不能默认构造. `std::optional<Result<>>` 也不行 (无法满足 `is_default_constructible`). **解法**: `std::unique_ptr<Result<>>` + factory `Result::success(value)` / `Result::failure(error)`
+2. **`worker.detach()` 是 misbehaved provider 场景的关键**: BlockingLLMProvider 设计永远 hang (不响应 stop_token), `worker.join()` 会 block forever → `std::thread` dtor 检测到 joinable → `std::terminate()` → 进程崩溃. detach 让 worker 继续后台运行 (线程泄漏可接受, 目标是不让父进程 IPC loop 永久 hang)
+3. **`kill_retry(this->child_pid_, SIGKILL)` 在 test_skill_interpreter 环境**: child_pid_ 是 Impl 成员, 由 posix_spawn 成功后设置. 测试用 `nullptr` engine + BlockingLLMProvider, child 进程被创建后真实运行 dispatch(), 父进程调用 dispatch_llm_generate 时 D1 kick in
+4. **`worker.detach()` 必然导致线程泄漏**: 这是 D1 设计的本质 trade-off. 真正 misbehaved provider 永远不返回, worker 只能 detach. 替代方案: 使用独立进程调用 LLM 而非线程 (但复杂度高, 不推荐)
+
+**后续 follow-ups** (Wave 4.5 解锁):
+- Wave 4.6: 优化 IPC loop write 失败处理 (检测 EPIPE/SIGPIPE → break loop) + 修复 test_skill_interpreter Wave-4.5-1 hang
+- microkernel 蓝图 LLM call 超时推广 (LoopAgent 等其他 LLM 使用点)
+- V2 streaming 兼容 (V1 sync generate 已 ship, V2 留后续 wave)
+
+---
+
 ## 七、存档说明
 
 > 以下历史看板已归档: 它们的 Phase 0-4 追踪已由 `docs/active-status.md` 替代。

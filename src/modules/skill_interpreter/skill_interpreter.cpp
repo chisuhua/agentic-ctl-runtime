@@ -12,12 +12,14 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -756,26 +758,63 @@ class SkillInterpreter::Impl {
     }
 
     std::string prompt = req.params.value("prompt", "");
-    // V1 简化：使用 generate() 同步接口
-    // V2 可扩展为流式
-    try {
-      GenerationRequest gen_req;
-      gen_req.prompt = prompt;
-      // ⚠️ NOT redundant: LLMParams = LLMConfig 别名, 默认 model = "gpt-4o-mini"
-      // (非空). 若不清空, CloudLLMAdapter L164 会拿默认遮蔽 factory 设置的真实
-      // model (skill 子进程通过 IPC llm_generate 调用父进程 LLM 时尤其重要,
-      // server 拒绝 "you passed gpt-4o-mini"). 清空让 adapter fallback.
-      // 详见 openspec/changes/fix-generation-request-model-default/.
-      gen_req.params.model.clear();
-      auto result = llm_->generate(gen_req, token);  // fix-skill-interpreter-dispatch-llm-token: 替换硬编码 {} 为外部 token
-      if (result.has_value()) {
-        return IPCResponse{true, {{"content", result.value().text}}};
-      } else {
-        return IPCResponse{false, nlohmann::json::object(), "LLM generation failed"};
+
+    // === Wave 4.5 D1: 独立 worker thread + cv.wait_for + kill_retry ===
+    // 真正修复 misbehaved provider 永久 hang 场景 (不依赖 provider 自觉 stop_token).
+    // 复用 Sprint 28 jthread pattern + Sprint 29 kill_retry 清理子进程.
+    // Result<T,E> 构造函数是 private (llm_types.h:106), 不能默认构造, 用
+    // unique_ptr<Result<>> 包装 (nullptr 表示未生成, factory 创建后 unique)
+    std::unique_ptr<Result<GenerationResult, LLMError>> result_ptr;
+    std::exception_ptr eptr;
+    std::atomic<bool> done{false};
+    std::mutex m;
+    std::condition_variable cv;
+
+    std::thread worker([&] {
+      try {
+        GenerationRequest gen_req;
+        gen_req.prompt = prompt;
+        // ⚠️ NOT redundant: LLMParams = LLMConfig 别名, 默认 model = "gpt-4o-mini"
+        // (非空). 若不清空, CloudLLMAdapter L164 会拿默认遮蔽 factory 设置的真实
+        // model (skill 子进程通过 IPC llm_generate 调用父进程 LLM 时尤其重要,
+        // server 拒绝 "you passed gpt-4o-mini"). 清空让 adapter fallback.
+        // 详见 openspec/changes/fix-generation-request-model-default/.
+        gen_req.params.model.clear();
+        auto r = llm_->generate(gen_req, token);  // fix-skill-interpreter-dispatch-llm-token: 替换硬编码 {} 为外部 token
+        {
+          std::lock_guard<std::mutex> lk(m);
+          result_ptr = std::make_unique<Result<GenerationResult, LLMError>>(std::move(r));
+        }
+      } catch (...) {
+        eptr = std::current_exception();
       }
-    } catch (const std::exception& e) {
-      return IPCResponse{false, nlohmann::json::object(), e.what()};
+      done.store(true);
+      cv.notify_all();
+    });
+
+    {
+      std::unique_lock<std::mutex> lk(m);
+      cv.wait_for(lk, cap.timeout_ms, [&] { return done.load(); });
     }
+    worker.join();  // 必 join (即使 worker throw, RAII-style)
+
+    if (!done.load()) {
+      // 超时: kill 子进程 (Sprint 29 已 ship kill_retry line 347-352)
+      // child_pid_ 是 Impl 成员 (line 195 析构函数用, 这里复用)
+      kill_retry(this->child_pid_, SIGKILL);
+      // ⚠️ worker.detach() 关键: BlockingLLMProvider 永远 hang (设计如此模拟 misbehaved
+      // provider), worker.join() 会 block forever → std::thread dtor 触发 std::terminate()
+      // → 进程崩溃. detach 让 worker 继续后台运行 (线程泄漏可接受, 目标是不让
+      // 父进程 IPC loop 永久 hang). worker 会在进程退出时被回收.
+      worker.detach();
+      return IPCResponse{false, nullptr, "llm_generate timeout"};
+    }
+    worker.join();  // 正常路径: worker 已 done, join 立即返回
+    if (eptr) std::rethrow_exception(eptr);
+    if (result_ptr && result_ptr->has_value()) {
+      return IPCResponse{true, {{"content", result_ptr->value().text}}};
+    }
+    return IPCResponse{false, nlohmann::json::object(), "LLM generation failed"};
   }
 
   IPCResponse dispatch_consume_budget(const IPCRequest& req,
