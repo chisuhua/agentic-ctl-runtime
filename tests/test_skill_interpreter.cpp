@@ -1109,3 +1109,70 @@ TEST_CASE("Wave-4.5-1 LLM call timeout triggers kill_retry",
 
   cleanup_file(skill);
 }
+
+// === Wave 4.7 (Oracle verdict): D1 SIGKILL → Abort 翻译回归守卫 ===
+//
+// 修复历史:
+// - Wave 4.5 ship D1 (worker thread + cv.wait_for + kill_retry) — 但 Wave 4.5 commit
+//   `43bcbd8` 引入 bug: `worker.join()` 在 `if (!done.load())` 检查之前无条件执行.
+//   若 worker hang (BlockingLLMProvider), join 永久阻塞 → timeout 分支不可达 → 测试
+//   hang 15s (test framework timeout).
+// - Wave 4.6 ship `f06802f` (waitpid(WNOHANG) + stop_input_thread_ flag) — 修了 IPC loop
+//   主路径, 但 timeout 分支仍不可达 (worker.join() 阻塞), 修复不彻底.
+// - Wave 4.7 ship (本 change, Oracle verdict): 真正 root cause 是 line 836 worker.join()
+//   顺序. 4 项修复:
+//   1. 删除 line 836 旧 worker.join() (Oracle 关键发现 — 真正 root cause)
+//   2. heap-化 SharedState (消除 detached worker 悬垂引用 UB)
+//   3. 加 stop_input_thread_ check before write_line (避免 SIGPIPE)
+//   4. IPC loop reap 逻辑加 stop_input_thread_ 检查: D1 SIGKILL → Abort
+//
+// 本 test (Wave-4.7-1) 验证 fix #4: D1 LLM call timeout 后, result.error_code 必须是
+// Abort (不是 Crash), 与 first-wins 机制 (7.8c / 7.S29-2 / 7.S29-3) 一致.
+//
+// 回归守卫: 若有人回退 fix #1 (恢复 line 836 worker.join() 在 !done 之前), 本 test
+// 会 hang 15s (test framework timeout), 因为 D1 timeout 分支重新变得不可达.
+TEST_CASE("Wave-4.7-1 D1 SIGKILL translates to Abort via stop_input_thread_ flag",
+          "[skill_interpreter][llm-timeout][wave-4.7][oracle-verdict]") {
+  MockToolRegistry tools;
+  test::MockBus bus;
+  auto blocking = std::make_unique<BlockingLLMProvider>();
+  auto* raw = blocking.get();
+  SkillInterpreter interpreter(tools, bus, raw, nullptr);
+
+  std::string skill = create_temp_skill(
+      "---\n"
+      "name: wave-4-7-1-abort-translation\n"
+      "version: 0.1\n"
+      "description: D1 SIGKILL must translate to Abort, not Crash\n"
+      "---\n"
+      "llm_generate({\"prompt\": \"hang\"})\n");
+  REQUIRE(!skill.empty());
+
+  SkillCapability cap;
+  cap.allow_llm = true;
+  cap.max_steps = 10;
+  cap.timeout_ms = Ms(200);
+
+  auto start = std::chrono::steady_clock::now();
+  auto result = interpreter.run(skill, cap, std::stop_token{});
+  auto elapsed_ms = std::chrono::duration_cast<Ms>(
+      std::chrono::steady_clock::now() - start).count();
+
+  // 核心契约 1: D1 SIGKILL 后 result.error_code == Abort (不是 Crash)
+  // 这是 Wave 4.7 fix #4 的关键: IPC loop reap 逻辑检查 stop_input_thread_
+  // (D1 设的) → Abort 而非 Crash. Crash 留给自然 SIGKILL (OOM killer 等)
+  CHECK(result.error_code == ErrorCode::Abort);
+
+  // 核心契约 2: result.success == false (D1 timeout 路径)
+  CHECK_FALSE(result.success);
+
+  // 核心契约 3: generate_calls == 1 (worker 真的进了 generate, 被 D1 终止)
+  REQUIRE(raw->generate_calls == 1);
+  REQUIRE(raw->entered.load() == true);
+
+  // 核心契约 4: elapsed < 500ms (D1 timeout 200ms + overhead). 这是回归守卫
+  // 关键: 若有人回退 fix #1 (line 836 worker.join() 顺序 bug), 测试会 hang 15s
+  CHECK(elapsed_ms < 500);
+
+  cleanup_file(skill);
+}

@@ -599,6 +599,14 @@ class SkillInterpreter::Impl {
 
         // dispatch
         IPCResponse resp = dispatch(req, cap, pid, token);
+        // Wave 4.7 修复 (Oracle verdict): dispatch 返回后若 stop_input_thread_ 已设
+        // (e.g. D1 timeout kill_retry 路径), 跳过 write_line — 写已被 SIGKILL 的 child
+        // pipe 会触发 SIGPIPE (本代码库无 signal(SIGPIPE, SIG_IGN) handler, 默认
+        // action 是 kill 父进程). stop_input_thread_ 是 IPC loop 终止信号, dispatch
+        // 返回 false 路径后必须立即退出, 不再尝试写入
+        if (stop_input_thread_.load(std::memory_order_acquire)) {
+          break;
+        }
         if (!write_line(pipe_in_w, serialize(resp))) {
           // 写失败 → 子进程 pipe 已关闭
           // Wave 4.6 fix: 若 child 被 kill_retry (e.g. D1 timeout) 后 parent write
@@ -682,8 +690,18 @@ class SkillInterpreter::Impl {
       } else if (sig == SIGKILL) {
         // 超时或 budget 超限已在上层处理
         if (r.error_code == ErrorCode::Unknown) {
-          r.success = false;
-          r.error_code = ErrorCode::Crash;
+          // Wave 4.7 fix: D1 LLM call timeout 主动 kill_retry(SIGKILL) child,
+          // 此时 stop_input_thread_ 被设 true (dispatch_llm_generate D1 超时分支),
+          // 应翻译为 Abort (上层主动终止) 而非 Crash (子进程意外死亡).
+          // 这是 test Wave-4.5-1 的契约: D1 timeout → Abort, 与 first-wins 机制 (7.8c
+          // / 7.S29-2 / 7.S29-3) 一致. 自然 SIGKILL (e.g. OOM killer) → Crash.
+          if (this->stop_input_thread_.load(std::memory_order_acquire)) {
+            r.success = false;
+            r.error_code = ErrorCode::Abort;
+          } else {
+            r.success = false;
+            r.error_code = ErrorCode::Crash;
+          }
         }
       } else {
         r.success = false;
@@ -788,18 +806,27 @@ class SkillInterpreter::Impl {
 
     std::string prompt = req.params.value("prompt", "");
 
+    // === Wave 4.7 fix (Oracle verdict): heap-allocate SharedState ===
+    // Wave 4.5 D1 设计假设 lambda 立即返回, 但 detach 后 stack 变量 (result_ptr,
+    // eptr, done, m, cv) 悬垂引用 — slow-but-finite provider 醒来时写已销毁栈
+    // 必现 crash. heap-化通过 shared_ptr 引用计数, detached worker 安全持有 state
+    // (state 不再依赖 dispatch 栈帧生命周期, 进程退出时回收)
+    struct SharedState {
+      std::unique_ptr<Result<GenerationResult, LLMError>> result_ptr;
+      std::exception_ptr eptr;
+      std::atomic<bool> done{false};
+      std::mutex m;
+      std::condition_variable cv;
+    };
+    auto state = std::make_shared<SharedState>();
+    auto llm_provider = this->llm_;  // 复制指针值, 生命周期由 Impl 所有者管理
+
     // === Wave 4.5 D1: 独立 worker thread + cv.wait_for + kill_retry ===
     // 真正修复 misbehaved provider 永久 hang 场景 (不依赖 provider 自觉 stop_token).
-    // 复用 Sprint 28 jthread pattern + Sprint 29 kill_retry 清理子进程.
     // Result<T,E> 构造函数是 private (llm_types.h:106), 不能默认构造, 用
-    // unique_ptr<Result<>> 包装 (nullptr 表示未生成, factory 创建后 unique)
-    std::unique_ptr<Result<GenerationResult, LLMError>> result_ptr;
-    std::exception_ptr eptr;
-    std::atomic<bool> done{false};
-    std::mutex m;
-    std::condition_variable cv;
-
-    std::thread worker([&] {
+    // unique_ptr<Result<>> 包装 (nullptr 表示未生成, factory 创建后 unique).
+    // Wave 4.7: lambda 改为按值捕获 state/llm_provider/token, 避免悬垂引用
+    std::thread worker([state, token, llm_provider, prompt] {
       try {
         GenerationRequest gen_req;
         gen_req.prompt = prompt;
@@ -809,46 +836,51 @@ class SkillInterpreter::Impl {
         // server 拒绝 "you passed gpt-4o-mini"). 清空让 adapter fallback.
         // 详见 openspec/changes/fix-generation-request-model-default/.
         gen_req.params.model.clear();
-        auto r = llm_->generate(gen_req, token);  // fix-skill-interpreter-dispatch-llm-token: 替换硬编码 {} 为外部 token
+        auto r = llm_provider->generate(gen_req, token);  // fix-skill-interpreter-dispatch-llm-token: 替换硬编码 {} 为外部 token
         {
-          std::lock_guard<std::mutex> lk(m);
-          result_ptr = std::make_unique<Result<GenerationResult, LLMError>>(std::move(r));
+          std::lock_guard<std::mutex> lk(state->m);
+          state->result_ptr = std::make_unique<Result<GenerationResult, LLMError>>(std::move(r));
         }
       } catch (...) {
-        eptr = std::current_exception();
+        state->eptr = std::current_exception();
       }
-      done.store(true);
-      cv.notify_all();
+      state->done.store(true);
+      state->cv.notify_all();
     });
 
     {
-      std::unique_lock<std::mutex> lk(m);
-      cv.wait_for(lk, cap.timeout_ms, [&] { return done.load(); });
+      std::unique_lock<std::mutex> lk(state->m);
+      state->cv.wait_for(lk, cap.timeout_ms, [&] { return state->done.load(); });
     }
-    worker.join();  // 必 join (即使 worker throw, RAII-style)
+    // Wave 4.7 fix (Oracle verdict): 删除 line 836 旧 worker.join().
+    // 原因: 若 worker hang (BlockingLLMProvider), cv.wait_for 超时返回后, 旧 join
+    // 永远阻塞 → timeout 分支 (kill_retry/detach) 不可达. 改为: 先 !done 检查,
+    // 再决定 detach (timeout) 或 join (success). 这是 Wave-4.5-1 hang 15s 的真正根因
 
-    if (!done.load()) {
+    if (!state->done.load()) {
       // 超时: kill 子进程 (Sprint 29 已 ship kill_retry line 347-352)
       // child_pid_ 是 Impl 成员 (line 195 析构函数用, 这里复用)
       kill_retry(this->child_pid_, SIGKILL);
       // ⚠️ worker.detach() 关键: BlockingLLMProvider 永远 hang (设计如此模拟 misbehaved
       // provider), worker.join() 会 block forever → std::thread dtor 触发 std::terminate()
       // → 进程崩溃. detach 让 worker 继续后台运行 (线程泄漏可接受, 目标是不让
-      // 父进程IPC loop 永久 hang). worker 会在进程退出时被回收.
+      // 父进程IPC loop 永久 hang). heap-allocated SharedState 通过 shared_ptr 引用
+      // 计数, detached worker 安全持有 state (Wave 4.7 fix)
       worker.detach();
       // Wave 4.6 修复: 设 stop_input_thread_=true, IPC loop 下次迭代 break (避免 write_line
       // 阻塞 — kernel 刚 kill 子进程后, parent write 到子进程 pipe 可能不立即 EPIPE
       // 而是 block 直到子进程 pipe fd 被完全关闭. stop_input_thread_=true 让 IPC loop
-      // 下次循环 check 时直接 break, 避免在 write_line 上 hang)
+      // 下次循环 check 时直接 break, 避免在 write_line 上 hang). Wave 4.7 加 stop flag
+      // check 在 dispatch 返回后 (line 605), 进一步跳过 write_line, 避免 SIGPIPE kill 父进程
       this->stop_input_thread_.store(true, std::memory_order_release);
       // Also notify input_cv_ in case parent thread is waiting on it
       this->input_cv_.notify_all();
       return IPCResponse{false, nullptr, "llm_generate timeout"};
     }
     worker.join();  // 正常路径: worker 已 done, join 立即返回
-    if (eptr) std::rethrow_exception(eptr);
-    if (result_ptr && result_ptr->has_value()) {
-      return IPCResponse{true, {{"content", result_ptr->value().text}}};
+    if (state->eptr) std::rethrow_exception(state->eptr);
+    if (state->result_ptr && state->result_ptr->has_value()) {
+      return IPCResponse{true, {{"content", state->result_ptr->value().text}}};
     }
     return IPCResponse{false, nlohmann::json::object(), "LLM generation failed"};
   }
