@@ -253,14 +253,15 @@ public:
         const AgentConfig& a,
         const SessionConfig& s,
         std::shared_ptr<CancellationRegistry> registry_arg,
-        // Sprint 30: PIMPL void* handle (header 用 void* 避开 namespace pollution,
-        // cpp 内 cast 回 ITimerService*。 nullptr = 不注入, D9 lazy)
-        void* timer_handle = nullptr
+        // Sprint 32: ITimerService* 直接类型 (消除 Sprint 30 PIMPL void* workaround)
+        // - nullptr 默认 D9 lazy (Impl 不创建 jthread, input_thread 入口 fallback)
+        // - 调用方保证 type 正确 (无需 static_cast)
+        agenticdsl::ITimerService* timer = nullptr
     ) : engine(e), bus(std::move(b)), registry(r), agent_cfg(a), session_cfg(s),
         provider_mode(a.provider),
         persist_dir_expanded(expand_home(s.persist_dir)),
-        // Sprint 30: cast void* → ITimerService* (调用方保证类型正确)
-        timer_(timer_handle ? static_cast<agenticdsl::ITimerService*>(timer_handle) : nullptr),
+        // Sprint 32: 直接类型, 无需 cast
+        timer_(timer),
         // §4.0.2/§4.0.9 NC3: shared registry if provided, else fallback self-owned
         cancellation_registry_(registry_arg ? registry_arg : std::make_shared<CancellationRegistry>()) {
         if (!persist_dir_expanded.empty()) {
@@ -322,8 +323,8 @@ ChatSession::ChatSession(
     const AgentConfig& agent_cfg,
     const SessionConfig& session_cfg,
     std::shared_ptr<CancellationRegistry> registry_arg,
-    void* timer_handle
-) : impl_(std::make_unique<Impl>(engine, std::move(bus), registry, agent_cfg, session_cfg, registry_arg, timer_handle)) {
+    agenticdsl::ITimerService* timer
+) : impl_(std::make_unique<Impl>(engine, std::move(bus), registry, agent_cfg, session_cfg, registry_arg, timer)) {
     // 生成 session ID (UUID 简化版)
     std::random_device rd;
     std::mt19937_64 gen(rd());
