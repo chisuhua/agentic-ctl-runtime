@@ -811,6 +811,46 @@ TimerService contract 层抽象在 3 种线程模型 (PDK plugin / fork+exec / s
 
 ---
 
+## §Wave 4.6 收官注记 (2026-09-12, wave-4.6-ipc-loop-zombie-detection SHIPPED, commit f06802f + AGENTS.md 5173193)
+
+**战略定位**: Wave 4.6 = Wave 4.5 D1 LLM timeout 后IPC loop hang 15s 问题的 partial fix. 真正修复需要 Wave 4.7 后续优化 pthread_kill / SIGCHLD handler. Wave 4.6 实施在 read_line 前加 `waitpid(WNOHANG)` zombie detection + `stop_input_thread_` flag 双重保险, 避免 read_line block 在内核 pipe fd 未完全 close 的中间状态.
+
+**2 commits ship** (push to main `55c09b8..5173193`):
+| # | Commit | 类别 | 内容 | 影响范围 |
+|---|--------|:---:|------|---------|
+| 1 | **`f06802f`** | fix(skill_interpreter) | IPC loop read_line 前加 `waitpid(WNOHANG)` + `stop_input_thread_` flag 检查 | `src/modules/skill_interpreter/skill_interpreter.cpp` IPC loop + Impl 新增 `stop_input_thread_` + `input_cv_` 成员 |
+| 2 | **`5173193`** | docs(AGENTS) | §ENGINEERING PATTERNS #6 Wave 4.6 case study + Provenance entry | `AGENTS.md` (+18 lines) |
+
+**Wave 4.6 修复内容**:
+- **Impl 新增成员**: `std::atomic<bool> stop_input_thread_{false}` + `std::condition_variable input_cv_` (IPC loop 退出信号)
+- **read_line 前加 `waitpid(WNOHANG)` 检测**: 若 child 是 zombie (wret == pid) 或已被 reap (wret == -1 && errno == ECHILD) → break IPC loop, 避免 read_line block
+- **read_line 前加 `stop_input_thread_` 检查**: D1 timeout 分支设 true, IPC loop 下次迭代 check 时直接 break (避免 write_line block)
+- **双重保险**: 既检测 zombie (waitpid), 也响应 stop flag (stop_input_thread_)
+
+**验证结果**:
+- `git log --oneline -5` → ✅ 2 commits on main
+- `tools/adr_lint.py` → ✅ 0 errors
+- `tools/docs_drift_audit.py` → ✅ 0 DRIFT
+- `test_skill_interpreter` → ⚠️ **12/13 PASS** — Wave-4.5-1 test 仍 hang 15s (known issue, Wave 4.7 待优化)
+
+**Known issue (Wave-4.5-1 hang 15s 未完全解决)**:
+- waitpid(WNOHANG) + stop_input_thread_ flag 修了 IPC loop 主路径 (write_line 失败分支已 break)
+- 但 read_line 内部可能 block 在内核 pipe fd 未完全 close 的中间状态
+- Wave 4.7 后续优化: 改用 pthread_kill 或 SIGCHLD handler 检测 child 死亡 + close(pipe_out_r) + read_line 返回 0 强制 break
+
+**关键调试教训** (Wave 4.6 沉淀):
+1. **D1 kill_retry 后 kernel pipe fd 未立即 close**: parent write/read 可能 block 而非立即 EPIPE/EOF. 需要 waitpid(WNOHANG) 主动检测 zombie 而非依赖 kernel 自动关闭
+2. **双重保险策略**: 单一机制 (只 waitpid 或只 stop flag) 可能因 timing 失效. 两者都设 → IPC loop 在下次迭代必然 break
+3. **`stop_input_thread_` flag 在 dispatch_llm_generate 内部修改**: Impl 成员, D1 timeout 分支设 true, IPC loop 在 while loop 顶部 check. 比 external request_stop() 更直接 (Wave 30 已 ship pattern)
+4. **设计原则**: D1 IPC 退出路径不依赖 kernel 自动行为 (pipe close, EOF detection), 而是 explicit flag + 显式检测. 与 Wave 4.5 D1 timeout 配合形成完整防护
+
+**后续 follow-ups** (Wave 4.6 解锁):
+- Wave 4.7: 优化 pthread_kill 或 SIGCHLD handler 检测 child 死亡 + close(pipe_out_r) + read_line 返回 0 强制 break
+- Wave 4.7: 验证 test_skill_interpreter Wave-4.5-1 hang 完全修复 (test_skill_interpreter 13/13 PASS)
+- microkernel 蓝图后续组件 (PipeBus / UserAgentLoader / procfs 等)
+
+---
+
 ## 七、存档说明
 
 > 以下历史看板已归档: 它们的 Phase 0-4 追踪已由 `docs/active-status.md` 替代。
