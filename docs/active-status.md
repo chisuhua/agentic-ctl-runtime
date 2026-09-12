@@ -910,6 +910,52 @@ TimerService contract 层抽象在 3 种线程模型 (PDK plugin / fork+exec / s
 
 ---
 
+## §fix-timer-service-destructor-hang 收官注记 (2026-09-12, fix-timer-service-destructor-hang SHIPPED, commit 897b147 + AGENTS.md 93bdb85)
+
+**战略定位**: TimerService dtor hang 永久 bug 修复 — microkernel 蓝图核心组件自身稳定 + 集成路径都验证健壮. 此前 AGENTS.md KI-1 描述不准确 (归为 Catch2 reporter bug), 实际是 TimerService 实现 bug: `std::condition_variable cv_.wait/wait_until` 不响应 `std::stop_token`, `~TimerService()` 依赖 jthread RAII 调 `request_stop()` 但 `request_stop()` 不调 `notify_one`, worker 永久 blocked, `join()` 永久 hang.
+
+**2 commits ship** (push to main `d412ddc..93bdb85`):
+| # | Commit | 类别 | 内容 | 影响范围 |
+|---|--------|:---:|------|---------|
+| 1 | **`897b147`** | fix(common) | TimerService dtor unblocks worker via `cv_.notify_all()` (2 处变更) | `src/common/utils/timer_service.cpp` cv_ 类型 + `~TimerService()` 显式 notify + `tests/test_timer_service.cpp` 2 regression guards |
+| 2 | **`93bdb85`** | docs(AGENTS) | §ENGINEERING PATTERNS #6 fix-timer-service-destructor-hang case study + KI-1 描述修正 + Provenance entry | `AGENTS.md` (+23 lines) |
+
+**TimerService 修复** (2 处变更):
+1. `cv_` 类型 `std::condition_variable` → `std::condition_variable_any` (防御性 + 未来 stop_token overload 兼容性; 当前 C++20 `wait_until` 无 stop_token 重载, 仍需显式 notify)
+2. `~TimerService()` 显式 `cv_.notify_all()` — 在 `worker_` dtor 之前调, 确保 worker 被 notify, 拿锁后看到 `stop_requested=true` 立即退出循环
+
+**新增 2 regression guard tests** (tests/test_timer_service.cpp):
+- `TimerService dtor_unblocks_within_1s_when_worker_idle` — worker idle 场景 dtor <1s 返回
+- `TimerService dtor_unblocks_within_1s_with_periodic_timer` — periodic 场景 dtor <1s 返回
+- 守卫根因: 若回退 fix (移除 `cv_.notify_all()` 或改回 `condition_variable`), 测试 hang 15s, catch2 报 failed
+
+**验证结果**:
+- `git log --oneline -5` → ✅ 2 commits on main (897b147 + 93bdb85)
+- `tools/adr_lint.py` → ✅ 0 errors
+- `tools/docs_drift_audit.py` → ✅ 0 DRIFT
+- `test_timer_service` → ✅ **13/13 PASS** (131 assertions, baseline 0/11 with hang, 真正修復!)
+- 全量 ctest → ✅ 223 PASS + 4 pre-existing 7.S29-1 Sprint 29 flaky (零回归)
+
+**AGENTS.md KI-1 描述修正**:
+- 此前记录: "Catch2 v3.7.0 + std::jthread reporter bug — test_timer_service binary exit 0 + 11 test body 全部跑完, catch2 reporter 误报 FAILED. 不影响功能, reporter 误报 only"
+- 修正后: "RESOLVED 2026-09-12 by fix-timer-service-destructor-hang commit 897b147. 真正 root cause 是 TimerService `~TimerService()` 永久 hang: `std::condition_variable cv_.wait` 不响应 `std::stop_token`, `jthread RAII request_stop` 不调 `notify_one`, worker 永久 blocked, `join()` 永久 hang"
+
+**关键调试教训** (TimerService fix 沉淀):
+1. **`std::condition_variable` vs `std::condition_variable_any` 选择规则**: 与 `std::stop_token` 配合必须用 `condition_variable_any` (wait overloads) 或显式 `cv_.notify_all()`. 不能依赖 `jthread` RAII 自动唤醒. **教训**: 任何 `cv_.wait/wait_until` + `jthread::request_stop()` 组合都需显式 notify
+2. **AGENTS.md 沉淀不能迷信历史记录**: KI-1 描述在 Sprint 28 ship 时合理, 但本次实测发现是 TimerService bug 而非 reporter bug. **教训**: 复杂 hang 问题需 `git show` + 实测 mini 重现 + 重新诊断, 不照搬历史结论
+3. **jthread RAII 不是万能**: jthread 析构调 `request_stop + join`, 但 cv_ 不知停. **教训**: cv_ 需显式 `notify_all()` 配合 jthread 析构
+4. **TimerService 沉淀模式补完**: 模式 #6 现在含 4 防御层 — ITimerService 抽象 + factory + RAII unique_ptr + **dtor 显式 notify** (新增). Sprint 33+ 类似组件 (e.g. PipeBus) 需同样显式 notify
+
+**设计原则 (TimerService fix 最终)**: TimerService 实现 = cv + jthread + **dtor 显式 notify_all** + periodic 累积 deadline + 异常隔离 + RAII unique_ptr 所有权. **6 层防护, 缺 notify 即死锁**.
+
+**后续 follow-ups** (TimerService fix 解锁):
+- microkernel 蓝图后续组件 (PipeBus / UserAgentLoader / procfs 等) — 同模式应用 dtor notify
+- 全项目其他 cv_ + jthread 模式审计 (Sprint 33+ backlog)
+
+**🎯 模式 #6 真正闭环补完**: Sprint 28 TimerService 抽象 → Sprint 29-32 3-consumer 集成 → Wave 4.5/4.6/4.7 SkillInterceptor LLM timeout → **fix-timer-service-destructor-hang TimerService 自身 dtor 修復**. microkernel 蓝图核心组件自身 + 集成路径都稳定.
+
+---
+
 ## 七、存档说明
 
 > 以下历史看板已归档: 它们的 Phase 0-4 追踪已由 `docs/active-status.md` 替代。
