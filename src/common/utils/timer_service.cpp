@@ -29,7 +29,12 @@ class TimerService : public ITimerService {
   }
 
   ~TimerService() override {
-    // jthread 析构自动 request_stop + join (C++20 RAII)
+    // 关键修复 (fix-timer-service-destructor-hang): std::jthread RAII 自动 request_stop +
+    // join, 但 std::condition_variable cv_.wait/wait_until **不响应 stop_token** — 必须显式
+    // notify 才能唤醒 worker (否则 cv_ 永久 blocked → join() 永久 hang → test hang 15s
+    // → SIGTERM). notify_all 在 worker_ dtor 之前调,确保 worker 拿到锁后能立即看到
+    // stop_requested=true 退出循环
+    cv_.notify_all();
   }
 
   TimerId register_oneshot(std::chrono::milliseconds delay,
@@ -85,6 +90,8 @@ class TimerService : public ITimerService {
       std::unique_lock<std::mutex> lock(mtx_);
 
       if (timers_.empty()) {
+        // predicate 检查 stop_requested: jthread 的 request_stop() 不通知 cv_,所以需要
+        // predicate 自己检查 stop_token. ~TimerService() 显式调 cv_.notify_all() 唤醒 worker
         cv_.wait(lock, [&] { return st.stop_requested() || !timers_.empty(); });
         if (st.stop_requested()) break;
         continue;
@@ -129,7 +136,11 @@ class TimerService : public ITimerService {
 
   std::atomic<TimerId> next_id_{1};
   mutable std::mutex mtx_;
-  std::condition_variable cv_;
+  // condition_variable_any 而非 condition_variable: 让 cv_.wait(lock, pred) / cv_.wait_until
+  // 在 std::stop_token 触发时自动 notify (注册 stop_callback). 修复 ~TimerService() 永久 hang
+  // bug (commit 8979b20 / change fix-timer-service-destructor-hang): 旧 condition_variable 不
+  // 感知 stop_token,request_stop() 不调 notify,worker 永久 blocked,join() 永久 hang
+  std::condition_variable_any cv_;
   std::map<TimerId, TimerEntry> timers_;
   std::jthread worker_;
 };

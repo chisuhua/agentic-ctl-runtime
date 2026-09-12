@@ -199,3 +199,46 @@ TEST_CASE("cancel_concurrent_with_fire", "[timer_service][cancel][race]") {
     }
   }
 }
+
+// === 12. dtor unblocks within 1s when worker idle (fix-timer-service-destructor-hang regression guard) ===
+//
+// Root cause history: TimerService worker 用 std::condition_variable cv_.wait(lock, predicate),
+// 但 std::condition_variable 不原生支持 stop_token. ~TimerService() 调 request_stop() 时 cv_
+// 没被 notify,worker 永久 blocked,join() 永久 hang. 改 condition_variable_any 后,wait 方法
+// 自动注册 stop_callback → notify_all,worker 立即 unblock.
+//
+// 本 test 守卫修复: 若回退到 std::condition_variable,本 test 会 hang 15s,test framework SIGTERM
+// 杀进程 → catch2 reporter 报 test failure (1 failed).
+TEST_CASE("TimerService dtor_unblocks_within_1s_when_worker_idle",
+          "[timer_service][dtor][regression-guard]") {
+  auto timer = make_default_timer_service();
+  // 等 worker 进入 idle cv_.wait (timers_ empty)
+  std::this_thread::sleep_for(100ms);
+  // 触发 dtor,计时
+  const auto t0 = std::chrono::steady_clock::now();
+  timer.reset();  // 触发 ~TimerService()
+  const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - t0).count();
+  // 必须 <1s 返回 (vs baseline hang 永久). 实际期望 <100ms
+  REQUIRE(elapsed_ms < 1000);
+}
+
+// === 13. dtor unblocks within 1s with periodic timer (fix-timer-service-destructor-hang regression guard) ===
+//
+// 验证 periodic timer 场景下 dtor 也能立即 unblock. 与 test 12 互补,覆盖 worker 在 cv_.wait_until
+// (而非 cv_.wait) 场景. wait_until 的 stop_token 响应是 condition_variable_any 提供的核心能力.
+TEST_CASE("TimerService dtor_unblocks_within_1s_with_periodic_timer",
+          "[timer_service][dtor][periodic][regression-guard]") {
+  auto timer = make_default_timer_service();
+  std::atomic<int> count{0};
+  timer->register_periodic(10ms, [&] { ++count; });
+  // 等 periodic 触发几次,worker 进入 cv_.wait_until 等下一个 deadline
+  std::this_thread::sleep_for(50ms);
+  REQUIRE(count.load() >= 1);  // 确认 timer 真的在跑
+  // 触发 dtor
+  const auto t0 = std::chrono::steady_clock::now();
+  timer.reset();
+  const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - t0).count();
+  REQUIRE(elapsed_ms < 1000);
+}
