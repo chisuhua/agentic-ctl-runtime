@@ -728,6 +728,48 @@ TimerService contract 层抽象在 3 种线程模型 (PDK plugin / fork+exec / s
 - Wave 4 `fix-skill-interpreter-token-and-timeout` (Sprint 29 解锁) — `std::stop_token` 透传到 `dispatch_llm_generate` (skill_interpreter.cpp:659)
 - microkernel 蓝图后续组件 (PipeBus / UserAgentLoader / procfs 等) 等 TimerService 沉淀充分后启动, 不立即新建 ADR
 
+---
+
+## §Wave 4 收官注记 (2026-09-12, fix-skill-interpreter-token-and-timeout DESIGN RECORD ONLY, archived as 2026-09-12-fix-skill-interpreter-token-and-timeout)
+
+**战略定位**: Wave 4 = **DESIGN RECORD ONLY** (无 code change). 核心 token 透传工作已在 Wave 4 follow-up #2 ship (commit `10176c5` + `dd97bcb`), 剩余 "timeout" 部分 (LLM provider hang 场景无超时防护) 设计但留 Sprint 33+ 实施.
+
+**0 commit ship (本 change 仅 design record)**:
+| # | Commit | 类别 | 内容 |
+|---|--------|:---:|------|
+| - | (无) | (无) | 本 change 不修改任何 code, 仅 OpenSpec 4 files (proposal/design/spec/tasks) 记录已 ship 部分 + 剩余 timeout 工作的设计路径 |
+
+**核心 token 透传已 ship 部分** (Wave 4 follow-up #2):
+- ✅ **`10176c5`** `fix(skill): forward stop_token through dispatch_llm_generate IPC` — skill_interpreter.cpp:680-694 dispatch 主循环从 `dispatch_llm_generate(req, cap)` 改为 `dispatch_llm_generate(req, cap, token)`, 透传外部 token
+- ✅ **`dd97bcb`** `fix(skill): dispatch_llm_generate early-exit on cancelled token (Oracle #1)` — skill_interpreter.cpp:744-779 `dispatch_llm_generate` 接受 `std::stop_token token = {}` 参数 + line 754 early-exit 检查 + line 770 透传到 `llm_->generate(gen_req, token)`
+
+**剩余 "timeout" 部分设计** (Sprint 33+ 实施, `wave-4.5-skill-interpreter-llm-timeout` 独立 wave):
+- **D1 推荐方案**: 独立 worker thread + `cv.wait_for(cap.timeout_ms)` + 超时后 `kill_retry(pid, SIGKILL)`. 通用方案, 不依赖 LLM provider 自觉检查 stop_token
+- **D2 备选**: 进程级 alarm (setitimer + SIGALRM) — 不推荐, signal handler 多线程问题
+- **D3 备选**: Proxy thread + 独立 process — 不推荐, 复杂度高
+- **选 D1 理由**: 通用性 + 标准 C++20 机制 (cv.wait_for) + 已有 jthread pattern (Sprint 28 kernel-timer-service) 可复用 + 与现有 TimerService pattern 一致 (RAII + 异常隔离)
+
+**OpenSpec artifacts ship** (gitignored, 仅磁盘):
+| Artifact | 路径 | 内容 |
+|----------|------|------|
+| proposal.md | `openspec/changes/fix-skill-interpreter-token-and-timeout/` | Why/What/Impact (Scope Out: 不实施新 code, 仅 design record) |
+| design.md | 同上 | 已 ship 部分总结 (commit `10176c5` + `dd97bcb`) + 3 步根因链 + D1/D2/D3 候选方案对比 + D1 推荐理由 + 4 Open Questions |
+| spec.md | `openspec/specs/fix-skill-interpreter-token-and-timeout/spec.md` | 5 ADDED Requirements (2 已 ship ✅ + 3 待实施 ⏳) |
+| tasks.md | 同上 | 已 ship tasks (1.1-1.4) + 待实施 tasks (2.1-2.10) + Self-Review (3.1-3.5) + Open Questions (4.1-4.4) |
+| archive | `openspec/changes/archive/2026-09-12-fix-skill-interpreter-token-and-timeout/` | 完整 archived change (5 Requirements 创建) |
+
+**验证结果** (design record 阶段, 无 code change):
+- `openspec change validate fix-skill-interpreter-token-and-timeout` → ✅ valid
+- `tools/adr_lint.py` → ✅ 0 errors
+- `tools/docs_drift_audit.py` → ✅ 0 DRIFT
+- 无 `test_*` 跑 (无 code change, 不需要测试验证)
+
+**Wave 4 后续 follow-ups** (本 change 解锁):
+- Sprint 33+ `wave-4.5-skill-interpreter-llm-timeout` 独立 wave — 实施 D1 推荐方案 (独立线程 + cv.wait_for + kill_retry), mock provider 模拟 hang 测试
+- microkernel 蓝图 LLM call 超时推广 (LoopAgent 等其他 LLM 使用点)
+
+---
+
 ## 七、存档说明
 
 > 以下历史看板已归档: 它们的 Phase 0-4 追踪已由 `docs/active-status.md` 替代。
