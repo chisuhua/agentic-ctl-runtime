@@ -851,6 +851,65 @@ TimerService contract 层抽象在 3 种线程模型 (PDK plugin / fork+exec / s
 
 ---
 
+## §Wave 4.7 收官注记 (2026-09-12, wave-4-7-ipc-loop-hang-fix SHIPPED, commit 8979b20 + AGENTS.md 3c78dfe)
+
+**战略定位**: Wave 4.7 = Wave 4.5 + Wave 4.6 修复未触达真正 root cause 的真正修复. Oracle session `ses_xx` 审查发现 Wave 4.5 commit `43bcbd8` 引入 bug: `worker.join()` 在 `if (!done.load())` 检查**之前**无条件执行, worker hang 时永久阻塞 → timeout 分支 (kill_retry/detach) 不可达. Wave 4.6 `f06802f` 修了 IPC loop 主路径但未触及根因. Wave 4.7 attempt #1 (close_fd pipe fds) 也基于错误诊断 — 同样在死代码路径. Oracle 审查纠正诊断 + 给出 4 项修复.
+
+**3 commits ship** (push to main `803c8e2..3c78dfe`):
+| # | Commit | 类别 | 内容 | 影响范围 |
+|---|--------|:---:|------|---------|
+| 1 | **`8979b20`** | fix(skill_interpreter) | Wave 4.7 IPC loop hang 15s 真正根因修復 (4 项修复) | `src/modules/skill_interpreter/skill_interpreter.cpp` (84 lines) + `tests/test_skill_interpreter.cpp` Wave-4.7-1 regression guard (67 lines) |
+| 2 | **`3c78dfe`** | docs(AGENTS) | §ENGINEERING PATTERNS #6 Wave 4.7 case study + Provenance entry | `AGENTS.md` (+34 lines) |
+| 3 | (本 commit) | docs(active-status) | Wave 4.7 收官注记 | `docs/active-status.md` (本节) |
+
+**Wave 4.7 4 项修复** (Oracle verdict):
+1. **删除 line 836 旧 worker.join()** (Oracle 关键发现 — 真正 root cause): cv.wait_for 超时返回后**先** `if (!state->done.load())` 检查, 再决定 detach (timeout) 或 join (success). 旧 join 在 !done 之前无条件执行 → worker hang 时永久阻塞 → timeout 分支死代码
+2. **heap-化 SharedState** (`auto state = std::make_shared<SharedState>()`): 把 `result_ptr`, `eptr`, `done`, `m`, `cv` 从 stack 移至 heap. lambda 按值捕获 `[state, token, llm_provider, prompt]` (避免悬垂引用 UB)
+3. **stop_input_thread_ check before write_line** (line 602): `if (stop_input_thread_.load()) break;` 跳过写到已 SIGKILL 的 child pipe (避免 SIGPIPE kill 父进程, 代码库无 SIGPIPE handler)
+4. **IPC loop reap 逻辑加 stop_input_thread_ 检查** (line 690+): WIFSIGNALED + SIGKILL + `r.error_code == Unknown` → 若 `stop_input_thread_` 设 (D1 主动 kill) → `ErrorCode::Abort`; 否则 `ErrorCode::Crash` (自然 SIGKILL, e.g. OOM killer)
+
+**新增 Wave-4.7-1 regression guard test** (tests/test_skill_interpreter.cpp):
+- 验证 `result.error_code == ErrorCode::Abort` (D1 SIGKILL 翻译)
+- 验证 `result.success == false`
+- 验证 `generate_calls == 1` (worker 真的进了 generate, 被 D1 终止)
+- 验证 `elapsed_ms < 500` (回归守卫 line 836 worker.join() ordering bug — 回退则 hang 15s)
+- 4 个 core contract + 1 regression guard contract
+
+**验证结果**:
+- `git log --oneline -5` → ✅ 3 commits on main (8979b20 + 3c78dfe + docs)
+- `tools/adr_lint.py` → ✅ 0 errors
+- `tools/docs_drift_audit.py` → ✅ 0 DRIFT
+- `test_skill_interpreter Wave-4.5-1` → ✅ **PASS 5/5** (baseline hang 15s → <500ms, 真正修复!)
+- `test_skill_interpreter Wave-4.7-1` → ✅ **PASS 6/6** (new regression guard)
+- `test_skill_interpreter` 全量 → ✅ 25/26 cases (1 pre-existing Sprint 29 flaky 7.S29-1, AGENTS.md 早记录, 单独跑 6/6 PASS)
+- 全量 ctest → ✅ 224/225 PASS (1 pre-existing Sprint 29 flaky)
+
+**Oracle 4 项审查应用**:
+- **M1** (删除旧 join): 真正 root cause 修复
+- **M2** (heap-化 shared state): 消除 detached worker 悬垂引用 UB (latent, 测试掩盖)
+- **M3** (stop flag before write_line): 避免 SIGPIPE kill 父进程
+- **M4** (Abort/Crash 翻译): 区分 D1 主动 kill vs 自然 SIGKILL
+
+**关键调试教训** (Wave 4.7 沉淀):
+1. **Oracle 审查纠正诊断**: 自我诊断"member vs local fd"表面正确但未触及根因. Oracle `git show 43bcbd8` 直接看到 join 在 !done 之前, 一行定真凶. **教训**: 复杂 hang 调试先 `git show` + `git blame` 历史 commit 找代码引入点, 不靠推理
+2. **D1 detach 设计需 heap-化 shared state**: stack 局部 + detach = 悬垂引用 UB. 即便测试用例 (BlockingLLMProvider 永远不醒) 掩盖, 真实场景会 crash. **教训**: 任何 `[&]` 捕获 + `detach()` 模式都是 latent UB, 必须 heap-化共享变量
+3. **SIGPIPE handler 缺失是常见盲区**: Linux 默认 SIGPIPE 是 kill 进程. timeout/网络断开场景触发 write → 进程崩溃. **教训**: 启动时 `signal(SIGPIPE, SIG_IGN)` 一次, 或 stop flag check before write
+4. **AGENTS.md 沉淀渐进式是事实**: Wave 4.5 → Wave 4.6 → Wave 4.7 3 个连续 ship, 每步在前一基础上改进, 最终方案在 Oracle 审查后才明确. **教训**: 不怕中途部分 ship, 记录 known issue 让 Oracle 后续审查明确方向
+
+**设计原则 (Wave 4.7 最终)**: D1 timeout 防护 = worker thread + cv.wait_for + 正确顺序 join/detach (先检查 done) + heap-allocated shared state + SIGPIPE 防护 + Abort/Crash 语义区分. 5 层防护, 缺一不可.
+
+**已知问题** (无新增):
+- 7.S29-1 Sprint 29 pre-existing flaky test (AGENTS.md 早记录): MockToolRegistry 同步返回导致 child 在 firer fire timer 前完成, fire_oneshot 返回 false. 单独跑 6/6 PASS, inherent limitation 非实现 bug. **非 Wave 4.7 回归**
+
+**后续 follow-ups** (Wave 4.7 解锁):
+- microkernel 蓝图后续组件 (PipeBus / UserAgentLoader / procfs 等)
+- LLM call timeout 推广 (LoopAgent 等其他 LLM 使用点)
+- D1 detach heap-state pattern 可推广至其他 detach 场景 (避免 UB)
+
+**🎯 模式 #6 真正闭环**: Sprint 28 TimerService 抽象 → Sprint 29 SkillInterceptor 集成 → Sprint 30/31/32 ChatSession 集成 (含模式 #5 死锁修复) → Wave 4.5 D1 LLM timeout → Wave 4.6 partial fix → **Wave 4.7 Oracle verdict 真正修复**. 跨 5 个 sprint + 3 个 wave 的 microkernel 蓝图配套基础设施沉淀完成.
+
+---
+
 ## 七、存档说明
 
 > 以下历史看板已归档: 它们的 Phase 0-4 追踪已由 `docs/active-status.md` 替代。
