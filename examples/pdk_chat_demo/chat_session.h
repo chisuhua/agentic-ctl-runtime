@@ -2,6 +2,11 @@
 // 关联: docs/adr/adr-0060-agent-composition.md
 //      docs/adr/adr-0033-session-hierarchy.md
 //      openspec/changes/pdk-chat-demo-v1-recap/design.md (T1: 持久化 + Budget 告警)
+//
+// Sprint 32: 移除 forward decl block, 改 include 完整 header (Sprint 30 PIMPL void* workaround 消除,
+//   恢复 agenticdsl::ITimerService* 直接类型). 之前 forward decl 在 commands/*.cpp include 时
+//   被嵌套为 pdk_chat_demo::agenticdsl 导致编译失败, 改 include 完整 header + commands/*.cpp
+//   在 GLOBAL scope include (已满足) 可避免嵌套.
 
 #pragma once
 
@@ -19,12 +24,15 @@
 
 #include "cancellation_registry.h"
 
-namespace agenticdsl {
-    class DSLEngine;
-    class IToolRegistry;
-    class IInteractionBus;
-    class IBudgetController;
-}
+// Sprint 32: 完整 include agenticdsl types (替代 forward decl block).
+// 包含完整头文件而非 forward decl, 让 ITimerService 等类型在编译时完整可见
+// (Impl 成员访问需要完整类型, forward decl 不够).
+// 注: 包含顺序很重要 - timer_service.h 必须在 chat_session.h 顶部 (GLOBAL scope),
+//   避免被 commands/*.cpp 在 namespace pdk_chat_demo 内 include 时嵌套
+#include <core/engine.h>
+#include <agenticdsl/contract/itool_registry.h>
+#include <agenticdsl/contract/iinteraction_bus.h>
+#include <agenticdsl/contract/timer_service.h>
 
 namespace pdk_chat_demo {
 
@@ -125,16 +133,12 @@ public:
         const AgentConfig& agent_cfg,
         const SessionConfig& session_cfg,
         std::shared_ptr<CancellationRegistry> registry_arg = nullptr,  // §4.0.2/§4.0.9 shared registry (NC3 default)
-        // Sprint 30 (chat-session-timer-migration) PIMPL void* handle:
-        // 避开 chat_session.h 在 namespace pdk_chat_demo 内的 agenticdsl namespace pollution
-        // (forward decl block 被 commands/*.cpp include 时嵌套为 pdk_chat_demo::agenticdsl,
-        // 导致 agenticdsl::DSLEngine 等不可见)。 用 void* opaque handle:
-        // 调用方传 static_cast<void*>(&timer), Impl 在 cpp 内 cast 回 ITimerService*。
+        // Sprint 30-31 (chat-session-timer-migration + chat-session-read-timeout) ship:
+        // ITimerService* 直接类型 (Sprint 32 重构消除 Sprint 30 PIMPL void* workaround)
         // - nullptr 默认 D9 lazy (Impl 不创建 jthread, input_thread 入口 fallback)
         // - 生命周期: 调用方保证 ChatSession 析构前 timer 无 in-flight callback (D10)
-        // - Sprint 31+ Mode 修正: 移除 chat_session.h forward decl block + 各 commands/*.cpp
-        //   改 include 完整 header, 可恢复 agenticdsl::ITimerService* 直接类型
-        void* timer_handle = nullptr
+        // - Sprint 30 PIMPL void* 已删除, 恢复类型安全 (无需 static_cast)
+        agenticdsl::ITimerService* timer = nullptr
     );
 
     ~ChatSession();

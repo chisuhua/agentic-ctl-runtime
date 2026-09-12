@@ -174,7 +174,7 @@ class FakeTimerService : public agenticdsl::ITimerService {
 TEST_CASE("7.C30-1 ChatSession registers periodic timer for shutdown responsiveness",
           "[chat_session][timer][sprint30]") {
   // Sprint 30 PIMPL void* approach 验证:
-  // 1. ChatSession 接受 void* timer_handle 参数 (PIMPL 避开 namespace pollution)
+  // 1. ChatSession 接受 ITimerService* 参数 (Sprint 32 重构消除 Sprint 30 PIMPL void*)
   // 2. 注入 FakeTimerService 后, input_thread 注册 periodic timer (50ms)
   // 3. Timer callback 设 shutdown_check_pending_ flag (release 序)
   // 4. ~Impl D8 四步析构: cancel timer + drain jthread + (no-op child/pipes)
@@ -184,11 +184,11 @@ TEST_CASE("7.C30-1 ChatSession registers periodic timer for shutdown responsiven
   SessionConfig session_cfg;
   session_cfg.enable_input_thread = false;  // 避免 stdin EOF 干扰本测试
 
-  // PIMPL: static_cast<void*>(&fake_timer)
+  // Sprint 32: ITimerService* 直接类型 (无需 static_cast, 类型安全)
   ChatSession session(
       nullptr, nullptr, nullptr,
       cfg.agent, session_cfg, nullptr,
-      static_cast<void*>(&fake_timer));
+      &fake_timer);
 
   // 验证: ChatSession 构造未触发 periodic timer 注册
   // (timer 注册在 input_thread 入口, input_thread 默认禁用)
@@ -215,10 +215,11 @@ TEST_CASE("7.C31-1 ChatSession self-pipe + poll read interrupt by timer wake-up"
   // stdin 保持打开 (无 EOF), thread 进入 poll 阻塞
   // (测试在 CI sandbox 中 stdin 通常是 /dev/null 立即 EOF, 此测试依赖 TTY/pipe
   // 保持打开; 若失败, 标记 known-issue, 不阻塞 Sprint 31 ship)
+  // Sprint 32: ITimerService* 直接类型 (无需 static_cast)
   ChatSession session(
       nullptr, nullptr, nullptr,
       cfg.agent, session_cfg, nullptr,
-      static_cast<void*>(&fake_timer));
+      &fake_timer);
 
   // 验证: input_thread 启用 → periodic timer 已注册 (Sprint 30 ship)
   // (允许 0 或 1 个 timer 注册, 取决于 timing)
